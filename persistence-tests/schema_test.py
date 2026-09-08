@@ -196,20 +196,20 @@ class PersistenceSchemaTests(unittest.TestCase):
             "identity": self.query_plan(
                 "SELECT user_id, google_subject, created_at_ms FROM users "
                 "WHERE google_subject = ?1 LIMIT 1",
-                ("subject",),
+                {"1": "subject"},
             ),
             "owner": self.query_plan(
                 "SELECT meter_id FROM meters WHERE owner_user_id = ?1 ORDER BY meter_id",
-                ("owner",),
+                {"1": "owner"},
             ),
             "viewer": self.query_plan(
                 "SELECT meter_id FROM meter_members WHERE user_id = ?1 ORDER BY meter_id",
-                ("viewer",),
+                {"1": "viewer"},
             ),
             "readings": self.query_plan(
                 "SELECT reading_id, measured_at_ms FROM readings "
                 "WHERE meter_id = ?1 ORDER BY measured_at_ms",
-                ("meter",),
+                {"1": "meter"},
             ),
         }
 
