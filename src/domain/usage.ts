@@ -9,7 +9,8 @@ export type UsageDomainErrorCode =
   | 'READING_OUT_OF_RANGE'
   | 'INVALID_READING_POINT'
   | 'READING_DECREASED'
-  | 'NON_POSITIVE_INTERVAL';
+  | 'NON_POSITIVE_INTERVAL'
+  | 'INVALID_TIME_ZONE';
 
 export class UsageDomainError extends Error {
   readonly code: UsageDomainErrorCode;
