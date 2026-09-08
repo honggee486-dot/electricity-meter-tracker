@@ -1,0 +1,27 @@
+/* live UI extensions */
+.masthead { gap: 16px; }
+.text-button { border: 0; background: transparent; color: #52675f; min-height: 44px; padding: 0 4px; font-size: 12px; }
+.state-panel { padding: 48px 0 24px; max-width: 460px; margin: 0 auto; }
+.state-copy { color: #657068; margin: 12px 0 24px; line-height: 1.7; }
+.error-text { color: #8b3f2a; }
+.google-login { min-height: 44px; display: flex; align-items: center; justify-content: flex-start; }
+.meter-toolbar { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 8px 12px; padding: 16px 0; border-bottom: 1px solid #dedfd4; }
+.meter-toolbar label { color: #687366; font-size: 12px; }
+.meter-toolbar select, .stack-form input, .stack-form select { width: 100%; min-width: 0; min-height: 46px; border: 1px solid #cbd2c3; border-radius: 8px; background: #fffef9; color: #203c38; padding: 9px 11px; }
+.role-badge { grid-column: 2; justify-self: start; font-size: 10px; border: 1px solid #c7cdbf; border-radius: 4px; padding: 2px 5px; color: #65715f; }
+.role-badge.viewer { background: #f0eee5; }
+.stack-form { display: grid; gap: 16px; margin-top: 22px; }
+.stack-form label { display: grid; gap: 6px; color: #5f6d63; font-size: 12px; }
+.action-notice { margin: 16px 0 0; padding: 10px 12px; border-radius: 8px; font-size: 12px; overflow-wrap: anywhere; }
+.action-notice.success { color: #245a4d; background: #e8f0e9; }
+.action-notice.error { color: #873e2a; background: #f5e8e2; }
+.empty-state { padding: 18px 0; color: #6a7266; font-size: 13px; }
+.daily-list li { grid-template-columns: 52px minmax(0, 1fr) 64px; }
+.daily-list strong { text-align: right; overflow-wrap: anywhere; }
+#reading-form input:disabled { color: #6b746b; -webkit-text-fill-color: #6b746b; opacity: 1; }
+.field-help { margin-top: -8px; color: #6a7266; font-size: 11px; line-height: 1.6; }
+@media (max-width: 350px) {
+  .meter-toolbar { grid-template-columns: 1fr; }
+  .meter-toolbar label, .meter-toolbar select, .role-badge { grid-column: 1; }
+  .google-login { overflow: hidden; }
+}
