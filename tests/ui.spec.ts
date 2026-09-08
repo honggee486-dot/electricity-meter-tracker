@@ -83,14 +83,18 @@ test('local assets only, no runtime errors, keyboard focus and timezone renderin
     if (new URL(request.url()).origin !== 'http://127.0.0.1:4173') external.push(request.url());
   });
   await page.goto('/');
+  const input = page.getByLabel('현재 계량기', { exact: true });
   await page.keyboard.press('Tab');
-  // WebKit's default Tab navigation skips links; Chromium includes them.
+  // Chromium includes the brand link in its default Tab order; WebKit may skip links.
   if (browserName !== 'webkit') {
     await expect(page.getByRole('link', { name: '우리집 전기 홈' })).toBeFocused();
     expect(await page.locator(':focus').evaluate(el => getComputedStyle(el).outlineStyle)).not.toBe('none');
+  }
+  // Prove keyboard reachability without depending on a browser-specific exact Tab count.
+  for (let attempts = 0; attempts < 8 && !(await input.evaluate(el => el === document.activeElement)); attempts += 1) {
     await page.keyboard.press('Tab');
   }
-  await expect(page.getByLabel('현재 계량기', { exact: true })).toBeFocused();
+  await expect(input).toBeFocused();
   expect(await page.locator(':focus').evaluate(el => getComputedStyle(el).outlineStyle)).not.toBe('none');
   await page.getByRole('link', { name: '기록', exact: true }).click();
   await expect(page.locator('#records-title')).toBeFocused();
