@@ -4,7 +4,7 @@
 
 ## 현재 상태
 
-**Architecture baseline + mobile UI prototype + 순수 usage/calendar/검침주기/forecast domain + 최소 Worker API shell + D1 schema/migration + persistence query owner baseline** 단계입니다. UI의 초기 기록과 지표는 여전히 가상 SAMPLE / DEMO DATA이며 실제 저장·계산 결과와 연결되지 않았습니다.
+**Architecture baseline + mobile UI prototype + 순수 usage/calendar/검침주기/forecast domain + 최소 Worker API shell + D1 schema/migration + persistence query owner + local D1/workerd runtime verification baseline** 단계입니다. UI의 초기 기록과 지표는 여전히 가상 SAMPLE / DEMO DATA이며 실제 저장·계산 결과와 연결되지 않았습니다.
 
 - 홈 진입 → 현재 계량기 숫자 입력 → 기록하기. 별도 페이지나 모달이 필요하지 않습니다.
 - 빈 값과 숫자 형식이 아닌 입력은 버튼 비활성화. UI는 소수점을 포함한 15자 이내 입력을 받지만 이 제한은 production 계량값 계약이 아닙니다.
@@ -16,7 +16,7 @@
 - `src/persistence/d1.ts`는 D1-compatible binding의 parameterized read query와 DB row 검증 경계를 소유합니다. Google subject lookup, owner meter 목록, viewer meter 목록, meter reading 시간순 조회만 현재 범위입니다.
 - `src/worker.ts`는 동일-origin API request owner입니다. product API는 여전히 deterministic `GET /api/health`와 최소 JSON error envelope만 제공하며, D1 local runtime 검증용 `/api/_dev/persistence-check`는 명시적인 local gate와 DB binding이 없으면 404입니다.
 - `migrations/0001_initial.sql`은 `users`, `meters`, `meter_members`, `readings`의 첫 D1 schema baseline입니다. 실제 Cloudflare D1 database를 생성하거나 production/preview binding으로 연결하지는 않았습니다.
-- `wrangler.local.jsonc`와 `persistence-tests/local_fixture.sql`은 local D1/workerd 검증 전용입니다. root `wrangler.jsonc`의 production/preview 설정과 분리되어 있으며 이 local config를 배포 대상으로 사용하지 않습니다.
+- `wrangler.local.jsonc`, `persistence-tests/local_fixture.sql`, `persistence-tests/local_runtime_check.sh`는 local D1/workerd 검증 전용입니다. root `wrangler.jsonc`의 production/preview 설정과 분리되어 있으며 local config를 배포 대상으로 사용하지 않습니다.
 - 개발용 preview는 Cloudflare Workers Builds와 연결되어 있습니다. `main`은 production 기준, `work/*`는 non-production preview이며 고정 개발 주소는 `https://dev-electricity-meter-tracker.247dev.workers.dev`입니다. Dashboard 설정은 저장소 밖 상태이므로 문제 조사 시 실제 Cloudflare 설정을 다시 확인합니다.
 
 ## 실행과 검증
@@ -45,11 +45,12 @@ npm run test:ui
 - `npm run test:worker`: `src/worker.ts`와 직접 import되는 persistence module을 `.worker-test/`에 임시 컴파일하고 Node 내장 test runner로 health/error routing, parameter binding, row mapping, local persistence gate 계약을 검증합니다. `.worker-test/`는 커밋하지 않습니다.
 - `npm run test:domain`: `src/domain`만 `.domain-test/`에 임시 컴파일한 뒤 Node 내장 test runner로 순수 domain 테스트를 실행합니다. `.domain-test/`는 커밋하지 않습니다.
 - `npm run test:ui`: 이미 빌드된 `dist/`를 포트 4173 preview 서버로 열어 Playwright 브라우저 검증을 실행합니다. 소스 변경 후에는 먼저 build가 필요합니다.
-- `npm test`: domain, Worker API/persistence, UI 테스트를 순서대로 실행합니다. persistence schema test는 별도 표준-library 검증이며 GitHub Actions에서 항상 함께 실행합니다. UI 테스트 전에는 `npm run build`가 선행되어야 합니다.
+- `npm test`: domain, Worker API/persistence, UI 테스트를 순서대로 실행합니다. persistence schema test와 Wrangler local D1/workerd round trip은 GitHub Actions에서 별도 단계로 항상 함께 실행합니다. UI 테스트 전에는 `npm run build`가 선행되어야 합니다.
 - Playwright는 iPhone 13 프로필의 Chromium/WebKit과 1440×900 데스크톱 Chromium에서 실행합니다. 긴 숫자는 390px 및 320px에서도 검사합니다.
-- `.github/workflows/verify.yml`은 `main`, `work/**`, pull request에서 build, persistence schema/query plan, Worker API/persistence, UTC/Asia-Seoul domain, Chromium/WebKit UI 테스트를 검증합니다.
+- `.github/workflows/verify.yml`은 `main`, `work/**`, pull request에서 build, persistence schema/query plan, Worker API/persistence, pinned Wrangler `4.129.0` local D1/workerd round trip, UTC/Asia-Seoul domain, Chromium/WebKit UI 테스트를 검증합니다.
+- `persistence-tests/local_runtime_check.sh`는 동일한 local persistence directory에서 D1 migration과 synthetic fixture를 적용한 뒤 workerd Worker의 gated probe를 호출하고, root product config에서는 같은 probe가 404로 닫혀 있는지 확인합니다. remote D1이나 배포는 사용하지 않습니다.
+- GitHub Actions의 local D1/workerd 검증은 실제 Cloudflare local runtime evidence이지만 Linux runner에서 수행되므로 Windows 고유 filesystem/process 동작의 증거로 확대 해석하지 않습니다.
 - 모바일 프로필은 브라우저 에뮬레이션입니다. 실제 iPhone 키보드, Safari 도구막대, 홈 인디케이터의 safe-area 동작은 실기기 증거가 아닙니다.
-- 실제 `wrangler` local D1/workerd에 migration + fixture를 적용하고 gated Worker route까지 왕복하는 검증은 OS/runtime evidence이므로 별도 로컬 검증 단계에서 수행합니다. Web-side 검증만으로 PASS라고 간주하지 않습니다.
 
 ## 첫 usage domain 계약
 
@@ -95,7 +96,7 @@ npm run test:ui
 | **Vite + TypeScript + 기본 DOM/CSS** | 채택. 화면 4개를 위한 런타임 프레임워크 없이 타입 검사, 모듈, 로컬 서버, 정적 build를 확보 |
 | React / Next.js / Vue / Svelte 등 | 보류. 현재는 복잡한 반응형 상태, SSR, 서버 라우팅 요구가 없어서 추가 런타임·도구 체계의 이점이 작음 |
 
-직접 개발 의존성은 Vite, TypeScript, Playwright 세 개이며 앱의 런타임 의존성은 없습니다. domain/Worker API 테스트는 Node 내장 test runner를 사용하고 persistence migration 검증은 Python 표준 `sqlite3`만 사용해 새 test dependency를 추가하지 않습니다. 외부 폰트·아이콘·차트 라이브러리·CDN을 사용하지 않습니다.
+직접 개발 의존성은 Vite, TypeScript, Playwright 세 개이며 앱의 런타임 의존성은 없습니다. domain/Worker API 테스트는 Node 내장 test runner를 사용하고 persistence migration 검증은 Python 표준 `sqlite3`만 사용해 새 test dependency를 추가하지 않습니다. Local runtime CI는 앱 dependency로 Wrangler를 추가하지 않고 검증 스크립트에서 `wrangler@4.129.0`을 명시적으로 고정해 실행합니다. 외부 폰트·아이콘·차트 라이브러리·CDN을 사용하지 않습니다.
 
 ## 책임 경계
 
@@ -111,7 +112,7 @@ npm run test:ui
 | `src/worker.ts` | 동일-origin Worker module entry, API route/method dispatch, 최소 JSON response/error envelope. local D1 probe는 명시적 local gate에서만 활성 |
 | `src/persistence/d1.ts` | D1-compatible prepared read query와 DB row 검증. UI/domain에서 SQL이나 binding을 직접 사용하지 않게 하는 persistence owner |
 | `migrations/` | D1 schema/migration source. 현재는 users/meters/viewer grants/raw readings와 DB-level integrity/index 계약만 소유 |
-| `wrangler.local.jsonc`, `persistence-tests/local_fixture.sql` | local D1/workerd integration evidence 전용. remote resource/config의 source가 아님 |
+| `wrangler.local.jsonc`, `persistence-tests/local_fixture.sql`, `persistence-tests/local_runtime_check.sh` | local D1/workerd integration evidence 전용. remote resource/config의 source가 아님 |
 | 향후 tariff policy | usage와 별도 모듈. 정책 version/effective date, 누진·계절·기본요금·조정요금·세금·기금·반올림을 소유 |
 | 향후 auth | Google 공급자의 안정적 subject identifier와 내부 user_id 연결. 이메일은 불변 identity가 아님. 서버에서 세션 검증 |
 
