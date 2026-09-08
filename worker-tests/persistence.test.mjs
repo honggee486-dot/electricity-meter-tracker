@@ -3,7 +3,9 @@ import test from 'node:test';
 
 import {
   PersistenceDataError,
+  ensureUserByGoogleSubject,
   findUserByGoogleSubject,
+  findUserById,
   listMeterReadings,
   listOwnedMeters,
   listViewerMeterIds,
@@ -30,6 +32,18 @@ class FakeStatement {
   async all() {
     return { results: this.db.resolve(this.sql, this.values, 'all') };
   }
+
+  async run() {
+    if (this.sql.includes('INSERT OR IGNORE INTO users')) {
+      const [userId, googleSubject, createdAtMs] = this.values;
+      const users = Array.isArray(this.db.rows.users) ? this.db.rows.users : [];
+      if (!users.some((user) => user.user_id === userId || user.google_subject === googleSubject)) {
+        users.push({ user_id: userId, google_subject: googleSubject, created_at_ms: createdAtMs });
+      }
+      this.db.rows.users = users;
+    }
+    return { success: true };
+  }
 }
 
 class FakeDb {
@@ -52,7 +66,14 @@ class FakeDb {
           : sql.includes('FROM readings')
             ? 'readings'
             : 'unknown';
-    const value = this.rows[key];
+    let value = this.rows[key];
+    if (key === 'users' && Array.isArray(value)) {
+      if (sql.includes('WHERE google_subject = ?1')) {
+        value = value.filter((row) => row.google_subject === values[0]);
+      } else if (sql.includes('WHERE user_id = ?1')) {
+        value = value.filter((row) => row.user_id === values[0]);
+      }
+    }
     if (mode === 'first') {
       return Array.isArray(value) ? (value[0] ?? null) : (value ?? null);
     }
@@ -73,7 +94,7 @@ const meterRow = {
 
 test('identity lookup uses a bound Google subject and maps the stored row', async () => {
   const db = new FakeDb({
-    users: { user_id: 'user-1', google_subject: 'subject-1', created_at_ms: 1 },
+    users: [{ user_id: 'user-1', google_subject: 'subject-1', created_at_ms: 1 }],
   });
 
   assert.deepEqual(await findUserByGoogleSubject(db, 'subject-1'), {
@@ -84,6 +105,26 @@ test('identity lookup uses a bound Google subject and maps the stored row', asyn
   assert.equal(db.calls.length, 1);
   assert.match(db.calls[0].sql, /google_subject = \?1/);
   assert.deepEqual(db.calls[0].values, ['subject-1']);
+});
+
+test('internal user lookup and first-login insert stay parameterized and idempotent', async () => {
+  const db = new FakeDb({ users: [] });
+
+  const created = await ensureUserByGoogleSubject(db, 'subject-1', 'candidate-1', 1234);
+  assert.deepEqual(created, {
+    userId: 'candidate-1',
+    googleSubject: 'subject-1',
+    createdAtMs: 1234,
+  });
+  assert.deepEqual(await findUserById(db, 'candidate-1'), created);
+
+  const returning = await ensureUserByGoogleSubject(db, 'subject-1', 'candidate-2', 9999);
+  assert.deepEqual(returning, created);
+  assert.equal(db.rows.users.length, 1);
+
+  const insertCall = db.calls.find((call) => call.sql.includes('INSERT OR IGNORE INTO users'));
+  assert.ok(insertCall);
+  assert.deepEqual(insertCall.values, ['candidate-1', 'subject-1', 1234]);
 });
 
 test('owner, viewer and reading queries stay parameterized and preserve ordering contracts', async () => {
@@ -124,7 +165,7 @@ test('row mapping rejects corrupted persistence values instead of leaking them i
 
 test('local persistence route exercises all four persistence reads only when explicitly gated', async () => {
   const db = new FakeDb({
-    users: { user_id: 'local-owner', google_subject: 'local-owner-subject', created_at_ms: 1 },
+    users: [{ user_id: 'local-owner', google_subject: 'local-owner-subject', created_at_ms: 1 }],
     meters: [{ ...meterRow, meter_id: 'local-meter', owner_user_id: 'local-owner' }],
     meter_members: [{ meter_id: 'local-meter' }],
     readings: [
