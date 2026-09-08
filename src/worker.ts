@@ -9,14 +9,42 @@ import {
   readCookieValues,
   verifySessionToken,
 } from './auth/session.js';
+import { createLocalDateFormatter } from './domain/calendar.js';
 import {
+  resolveEffectiveBillingCloseDate,
+  type BillingCloseSetting,
+} from './domain/billingCycle.js';
+import {
+  UsageDomainError,
+  calculateUsageInterval,
+  createMeterReadingPoint,
+  type MeterReadingPoint,
+} from './domain/usage.js';
+import {
+  PersistenceDataError,
+  createMeter,
+  createReading,
+  deleteMeter,
+  deleteReading,
   ensureUserByGoogleSubject,
+  findMeterAccess,
+  findNextReading,
+  findPreviousReading,
+  findReadingAt,
+  findReadingById,
   findUserByGoogleSubject,
   findUserById,
+  listAccessibleMeters,
   listMeterReadings,
   listOwnedMeters,
   listViewerMeterIds,
+  updateMeterSettings,
+  updateReading,
   type D1DatabaseLike,
+  type PersistedMeter,
+  type PersistedMeterAccess,
+  type PersistedReading,
+  type PersistedUser,
 } from './persistence/d1.js';
 
 const JSON_HEADERS = {
@@ -24,6 +52,8 @@ const JSON_HEADERS = {
   'content-type': 'application/json; charset=utf-8',
 } as const;
 const AUTH_FORM_LIMIT_BYTES = 20 * 1024;
+const API_JSON_LIMIT_BYTES = 16 * 1024;
+const RESOURCE_ID_PATTERN = /^[A-Za-z0-9._~-]{1,128}$/;
 
 interface ApiErrorBody {
   error: {
@@ -52,6 +82,21 @@ interface AuthConfig {
   sessionSecret: string;
   sessionTtlSeconds: number;
 }
+
+interface MeterSettingsInput {
+  name: string;
+  timezone: string;
+  billingCloseKind: PersistedMeter['billingCloseKind'];
+  billingCloseDay: number | null;
+}
+
+interface ReadingInput extends MeterReadingPoint {}
+
+type ResourceRoute =
+  | { kind: 'meters' }
+  | { kind: 'meter'; meterId: string }
+  | { kind: 'readings'; meterId: string }
+  | { kind: 'reading'; meterId: string; readingId: string };
 
 const LOCAL_PROBE = {
   googleSubject: 'local-owner-subject',
@@ -114,6 +159,22 @@ function unauthenticated(headers?: HeadersInit): Response {
   return apiError(401, 'UNAUTHENTICATED', 'A valid session is required.', headers);
 }
 
+function resourceNotFound(): Response {
+  return apiError(404, 'NOT_FOUND', 'Resource not found.');
+}
+
+function forbidden(): Response {
+  return apiError(403, 'FORBIDDEN', 'Owner access is required for this operation.');
+}
+
+function invalidRequest(message = 'Request body is invalid.'): Response {
+  return apiError(400, 'INVALID_REQUEST', message);
+}
+
+function readingConflict(): Response {
+  return apiError(409, 'READING_CONFLICT', 'Reading conflicts with the meter reading sequence.');
+}
+
 function singleFormValue(form: URLSearchParams, name: string): string | null {
   const values = form.getAll(name);
   return values.length === 1 && values[0].length > 0 ? values[0] : null;
@@ -133,6 +194,200 @@ async function parseLoginForm(request: Request): Promise<URLSearchParams | null>
     throw new RangeError('Auth request body is too large.');
   }
   return new URLSearchParams(body);
+}
+
+async function parseJsonObject(request: Request): Promise<Record<string, unknown> | Response> {
+  const contentType = request.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase();
+  if (contentType !== 'application/json') {
+    return apiError(415, 'UNSUPPORTED_MEDIA_TYPE', 'Expected application/json.');
+  }
+  const declaredLength = request.headers.get('content-length');
+  if (declaredLength && /^\d+$/.test(declaredLength) && Number(declaredLength) > API_JSON_LIMIT_BYTES) {
+    return apiError(413, 'REQUEST_TOO_LARGE', 'Request body is too large.');
+  }
+  const text = await request.text();
+  if (new TextEncoder().encode(text).byteLength > API_JSON_LIMIT_BYTES) {
+    return apiError(413, 'REQUEST_TOO_LARGE', 'Request body is too large.');
+  }
+
+  try {
+    const body: unknown = JSON.parse(text);
+    if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+      return invalidRequest();
+    }
+    return body as Record<string, unknown>;
+  } catch {
+    return invalidRequest();
+  }
+}
+
+function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
+  const actual = Object.keys(value).sort();
+  const sortedExpected = [...expected].sort();
+  return actual.length === sortedExpected.length
+    && actual.every((key, index) => key === sortedExpected[index]);
+}
+
+function parseMeterSettings(body: Record<string, unknown>): MeterSettingsInput | null {
+  if (!hasExactKeys(body, ['name', 'timezone', 'billingClose'])) {
+    return null;
+  }
+  if (typeof body.name !== 'string' || typeof body.timezone !== 'string') {
+    return null;
+  }
+  const name = body.name.trim();
+  const timezone = body.timezone.trim();
+  if (!name || !timezone || typeof body.billingClose !== 'object' || body.billingClose === null || Array.isArray(body.billingClose)) {
+    return null;
+  }
+
+  const close = body.billingClose as Record<string, unknown>;
+  let setting: BillingCloseSetting;
+  if (close.kind === 'month-end' && hasExactKeys(close, ['kind'])) {
+    setting = { kind: 'month-end' };
+  } else if (
+    close.kind === 'day'
+    && hasExactKeys(close, ['kind', 'day'])
+    && typeof close.day === 'number'
+    && Number.isInteger(close.day)
+  ) {
+    setting = { kind: 'day', day: close.day };
+  } else {
+    return null;
+  }
+
+  try {
+    createLocalDateFormatter(timezone);
+    resolveEffectiveBillingCloseDate(2024, 2, setting);
+  } catch (error) {
+    if (error instanceof UsageDomainError) {
+      return null;
+    }
+    throw error;
+  }
+
+  return setting.kind === 'month-end'
+    ? { name, timezone, billingCloseKind: 'month-end', billingCloseDay: null }
+    : { name, timezone, billingCloseKind: 'day', billingCloseDay: setting.day };
+}
+
+function parseReadingInput(body: Record<string, unknown>): ReadingInput | null {
+  if (!hasExactKeys(body, ['measuredAtMs', 'cumulativeKwh'])) {
+    return null;
+  }
+  if (typeof body.measuredAtMs !== 'number' || typeof body.cumulativeKwh !== 'string') {
+    return null;
+  }
+  try {
+    return createMeterReadingPoint(body.cumulativeKwh, body.measuredAtMs);
+  } catch (error) {
+    if (error instanceof UsageDomainError) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+function serializeMeter(access: PersistedMeterAccess): object {
+  const meter = access.meter;
+  return {
+    meterId: meter.meterId,
+    name: meter.name,
+    timezone: meter.timezone,
+    billingClose: meter.billingCloseKind === 'month-end'
+      ? { kind: 'month-end' }
+      : { kind: 'day', day: meter.billingCloseDay },
+    role: access.role,
+    createdAtMs: meter.createdAtMs,
+    updatedAtMs: meter.updatedAtMs,
+  };
+}
+
+function serializeReading(reading: PersistedReading): object {
+  return {
+    readingId: reading.readingId,
+    meterId: reading.meterId,
+    measuredAtMs: reading.measuredAtMs,
+    cumulativeWh: reading.cumulativeWh,
+    createdAtMs: reading.createdAtMs,
+  };
+}
+
+function parseResourceRoute(pathname: string): ResourceRoute | null {
+  const parts = pathname.split('/').filter(Boolean);
+  if (parts.length === 2 && parts[0] === 'api' && parts[1] === 'meters') {
+    return { kind: 'meters' };
+  }
+  if (parts.length < 3 || parts[0] !== 'api' || parts[1] !== 'meters' || !RESOURCE_ID_PATTERN.test(parts[2])) {
+    return null;
+  }
+  const meterId = parts[2];
+  if (parts.length === 3) {
+    return { kind: 'meter', meterId };
+  }
+  if (parts.length === 4 && parts[3] === 'readings') {
+    return { kind: 'readings', meterId };
+  }
+  if (
+    parts.length === 5
+    && parts[3] === 'readings'
+    && RESOURCE_ID_PATTERN.test(parts[4])
+  ) {
+    return { kind: 'reading', meterId, readingId: parts[4] };
+  }
+  return null;
+}
+
+async function resolveSessionUser(
+  request: Request,
+  config: AuthConfig,
+  nowMs: number,
+): Promise<PersistedUser | Response> {
+  const cookies = readCookieValues(request, SESSION_COOKIE_NAME);
+  if (cookies.length !== 1) {
+    return unauthenticated();
+  }
+
+  let identity;
+  try {
+    identity = await verifySessionToken(cookies[0], config.sessionSecret, nowMs);
+  } catch (error) {
+    if (error instanceof SessionError) {
+      return unauthenticated({ 'set-cookie': clearSessionCookie() });
+    }
+    throw error;
+  }
+
+  const user = await findUserById(config.db, identity.userId);
+  if (!user) {
+    return unauthenticated({ 'set-cookie': clearSessionCookie() });
+  }
+  return user;
+}
+
+function persistedPoint(reading: PersistedReading): MeterReadingPoint {
+  return { measuredAtMs: reading.measuredAtMs, cumulativeWh: reading.cumulativeWh };
+}
+
+function readingFitsSequence(
+  previous: PersistedReading | null,
+  current: MeterReadingPoint,
+  next: PersistedReading | null,
+): boolean {
+  try {
+    if (previous) {
+      calculateUsageInterval(persistedPoint(previous), current);
+    }
+    if (next) {
+      calculateUsageInterval(current, persistedPoint(next));
+    }
+    return true;
+  } catch (error) {
+    if (error instanceof UsageDomainError) {
+      return false;
+    }
+    throw error;
+  }
 }
 
 async function handleGoogleLogin(
@@ -189,26 +444,230 @@ async function handleGoogleLogin(
 }
 
 async function handleSession(request: Request, config: AuthConfig, nowMs: number): Promise<Response> {
-  const cookies = readCookieValues(request, SESSION_COOKIE_NAME);
-  if (cookies.length !== 1) {
-    return unauthenticated();
-  }
-
-  let identity;
-  try {
-    identity = await verifySessionToken(cookies[0], config.sessionSecret, nowMs);
-  } catch (error) {
-    if (error instanceof SessionError) {
-      return unauthenticated({ 'set-cookie': clearSessionCookie() });
-    }
-    throw error;
-  }
-
-  const user = await findUserById(config.db, identity.userId);
-  if (!user) {
-    return unauthenticated({ 'set-cookie': clearSessionCookie() });
+  const user = await resolveSessionUser(request, config, nowMs);
+  if (user instanceof Response) {
+    return user;
   }
   return jsonResponse({ authenticated: true, userId: user.userId });
+}
+
+async function handleMetersRoute(
+  request: Request,
+  config: AuthConfig,
+  user: PersistedUser,
+  dependencies: WorkerDependencies,
+  nowMs: number,
+): Promise<Response> {
+  if (request.method === 'GET') {
+    const meters = await listAccessibleMeters(config.db, user.userId);
+    return jsonResponse({ meters: meters.map(serializeMeter) });
+  }
+  if (request.method !== 'POST') {
+    return methodNotAllowed('GET, POST');
+  }
+
+  const body = await parseJsonObject(request);
+  if (body instanceof Response) {
+    return body;
+  }
+  const settings = parseMeterSettings(body);
+  if (!settings) {
+    return invalidRequest('Meter settings are invalid.');
+  }
+
+  const randomUUID = dependencies.randomUUID ?? (() => crypto.randomUUID());
+  const meter = await createMeter(config.db, {
+    meterId: randomUUID(),
+    ownerUserId: user.userId,
+    ...settings,
+    createdAtMs: nowMs,
+    updatedAtMs: nowMs,
+  });
+  return jsonResponse({ meter: serializeMeter({ meter, role: 'owner' }) }, { status: 201 });
+}
+
+async function handleMeterRoute(
+  route: Extract<ResourceRoute, { kind: 'meter' }>,
+  request: Request,
+  config: AuthConfig,
+  user: PersistedUser,
+  nowMs: number,
+): Promise<Response> {
+  const access = await findMeterAccess(config.db, route.meterId, user.userId);
+  if (!access) {
+    return resourceNotFound();
+  }
+
+  if (request.method === 'GET') {
+    return jsonResponse({ meter: serializeMeter(access) });
+  }
+  if (request.method !== 'PUT' && request.method !== 'DELETE') {
+    return methodNotAllowed('GET, PUT, DELETE');
+  }
+  if (access.role !== 'owner') {
+    return forbidden();
+  }
+
+  if (request.method === 'DELETE') {
+    await deleteMeter(config.db, route.meterId);
+    return new Response(null, { status: 204 });
+  }
+
+  const body = await parseJsonObject(request);
+  if (body instanceof Response) {
+    return body;
+  }
+  const settings = parseMeterSettings(body);
+  if (!settings) {
+    return invalidRequest('Meter settings are invalid.');
+  }
+  const updated = await updateMeterSettings(
+    config.db,
+    route.meterId,
+    settings.name,
+    settings.timezone,
+    settings.billingCloseKind,
+    settings.billingCloseDay,
+    nowMs,
+  );
+  if (!updated) {
+    return resourceNotFound();
+  }
+  return jsonResponse({ meter: serializeMeter({ meter: updated, role: 'owner' }) });
+}
+
+async function handleReadingsRoute(
+  route: Extract<ResourceRoute, { kind: 'readings' }>,
+  request: Request,
+  config: AuthConfig,
+  user: PersistedUser,
+  dependencies: WorkerDependencies,
+  nowMs: number,
+): Promise<Response> {
+  const access = await findMeterAccess(config.db, route.meterId, user.userId);
+  if (!access) {
+    return resourceNotFound();
+  }
+
+  if (request.method === 'GET') {
+    const readings = await listMeterReadings(config.db, route.meterId);
+    return jsonResponse({ readings: readings.map(serializeReading) });
+  }
+  if (request.method !== 'POST') {
+    return methodNotAllowed('GET, POST');
+  }
+  if (access.role !== 'owner') {
+    return forbidden();
+  }
+
+  const body = await parseJsonObject(request);
+  if (body instanceof Response) {
+    return body;
+  }
+  const input = parseReadingInput(body);
+  if (!input) {
+    return invalidRequest('Reading input is invalid.');
+  }
+  if (await findReadingAt(config.db, route.meterId, input.measuredAtMs)) {
+    return readingConflict();
+  }
+  const [previous, next] = await Promise.all([
+    findPreviousReading(config.db, route.meterId, input.measuredAtMs),
+    findNextReading(config.db, route.meterId, input.measuredAtMs),
+  ]);
+  if (!readingFitsSequence(previous, input, next)) {
+    return readingConflict();
+  }
+
+  const randomUUID = dependencies.randomUUID ?? (() => crypto.randomUUID());
+  const created = await createReading(config.db, {
+    readingId: randomUUID(),
+    meterId: route.meterId,
+    measuredAtMs: input.measuredAtMs,
+    cumulativeWh: input.cumulativeWh,
+    createdAtMs: nowMs,
+  });
+  if (!created) {
+    return readingConflict();
+  }
+  return jsonResponse({ reading: serializeReading(created) }, { status: 201 });
+}
+
+async function handleReadingRoute(
+  route: Extract<ResourceRoute, { kind: 'reading' }>,
+  request: Request,
+  config: AuthConfig,
+  user: PersistedUser,
+): Promise<Response> {
+  const access = await findMeterAccess(config.db, route.meterId, user.userId);
+  if (!access) {
+    return resourceNotFound();
+  }
+  const existing = await findReadingById(config.db, route.meterId, route.readingId);
+  if (!existing) {
+    return resourceNotFound();
+  }
+
+  if (request.method === 'GET') {
+    return jsonResponse({ reading: serializeReading(existing) });
+  }
+  if (request.method !== 'PUT' && request.method !== 'DELETE') {
+    return methodNotAllowed('GET, PUT, DELETE');
+  }
+  if (access.role !== 'owner') {
+    return forbidden();
+  }
+
+  if (request.method === 'DELETE') {
+    await deleteReading(config.db, route.meterId, route.readingId);
+    return new Response(null, { status: 204 });
+  }
+
+  const body = await parseJsonObject(request);
+  if (body instanceof Response) {
+    return body;
+  }
+  const input = parseReadingInput(body);
+  if (!input) {
+    return invalidRequest('Reading input is invalid.');
+  }
+  const exact = await findReadingAt(config.db, route.meterId, input.measuredAtMs);
+  if (exact && exact.readingId !== existing.readingId) {
+    return readingConflict();
+  }
+  const [previous, next] = await Promise.all([
+    findPreviousReading(config.db, route.meterId, input.measuredAtMs, existing.readingId),
+    findNextReading(config.db, route.meterId, input.measuredAtMs, existing.readingId),
+  ]);
+  if (!readingFitsSequence(previous, input, next)) {
+    return readingConflict();
+  }
+
+  const updated = await updateReading(config.db, existing, input.measuredAtMs, input.cumulativeWh);
+  if (!updated) {
+    return readingConflict();
+  }
+  return jsonResponse({ reading: serializeReading(updated) });
+}
+
+async function handleProductResourceRoute(
+  route: ResourceRoute,
+  request: Request,
+  config: AuthConfig,
+  user: PersistedUser,
+  dependencies: WorkerDependencies,
+  nowMs: number,
+): Promise<Response> {
+  if (route.kind === 'meters') {
+    return handleMetersRoute(request, config, user, dependencies, nowMs);
+  }
+  if (route.kind === 'meter') {
+    return handleMeterRoute(route, request, config, user, nowMs);
+  }
+  if (route.kind === 'readings') {
+    return handleReadingsRoute(route, request, config, user, dependencies, nowMs);
+  }
+  return handleReadingRoute(route, request, config, user);
 }
 
 async function localPersistenceCheck(db: D1DatabaseLike): Promise<Response> {
@@ -340,6 +799,27 @@ export async function handleWorkerRequest(
       { authenticated: false },
       { headers: { 'set-cookie': clearSessionCookie() } },
     );
+  }
+
+  const resourceRoute = parseResourceRoute(url.pathname);
+  if (resourceRoute) {
+    const config = authConfig(env);
+    if (!config) {
+      return authNotConfigured();
+    }
+    const nowMs = (dependencies.nowMs ?? Date.now)();
+    const user = await resolveSessionUser(request, config, nowMs);
+    if (user instanceof Response) {
+      return user;
+    }
+    try {
+      return await handleProductResourceRoute(resourceRoute, request, config, user, dependencies, nowMs);
+    } catch (error) {
+      if (error instanceof PersistenceDataError) {
+        return apiError(500, 'PERSISTENCE_ERROR', 'Persistence operation failed.');
+      }
+      throw error;
+    }
   }
 
   return handleRequest(request);
