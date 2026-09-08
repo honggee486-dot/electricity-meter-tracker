@@ -25,6 +25,7 @@
 - [x] `.dev.vars` / `.env` 계열 Secret 파일 Git 제외
 - [x] build + persistence + local D1/workerd + Worker/auth/resource API + domain + Playwright GitHub Actions verify 경로 유지
 - [x] canonical Cloudflare D1 생성, root `DB` binding 기록, `0001_initial.sql` remote migration 적용 및 상태 확인
+- [x] Google auth runtime repository guard: 실제 Client ID/명시적 TTL public vars만 root config에 기록하고 `SESSION_SECRET`은 저장소 밖에 유지
 
 현재 UI는 실제 repository API/domain 계약을 사용합니다. canonical Cloudflare remote D1 database/binding/migration은 구성했으며, Google Client ID/SESSION_SECRET 환경값과 실제 Google Provider 로그인은 아직 구성하지 않았으므로 repository test에서는 deterministic mock과 local D1/workerd를 사용합니다.
 
@@ -42,7 +43,7 @@
 8. 검침 마감 UI는 `1..31` 또는 별도 `월말`입니다. 29~31일 고정값이 없는 달에는 domain이 그 달 실제 마지막 날을 사용하고, `월말`은 매달 실제 마지막 날을 사용합니다.
 9. 전기요금은 아직 정책 모듈이 없으므로 실제/샘플 금액을 표시하지 않습니다.
 10. Playwright는 API와 GIS를 deterministic하게 mock해 auth 미설정/signed-out 로그인, owner quick write+reload, viewer read-only, 첫 meter 생성, API 실패, 월말 설정, 모바일 폭과 keyboard 흐름을 보호합니다.
-11. 실제 Provider credential, remote D1, production secret, 실사용자 데이터, sharing invitation, PWA/offline write, tariff는 이 baseline에 포함하지 않았습니다.
+11. 실제 Provider credential, production secret, 실사용자 데이터, sharing invitation, PWA/offline write, tariff는 이 baseline에 포함하지 않았습니다.
 
 ## 확정 운영 방향: 처음 만든 remote resource를 최종본까지 사용
 
@@ -53,8 +54,9 @@
 - remote canonical D1에는 synthetic fixture/mock/test data를 넣지 않습니다. 자동 fixture는 계속 local D1/workerd에서만 사용합니다.
 - remote DB schema 변경은 versioned migration으로만 적용하며 임의 SQL 수정이나 실제 data dump commit은 하지 않습니다.
 - Google Web Client도 최종용 하나를 사용합니다. 현재 dev origin을 Authorized JavaScript origin으로 등록하고 production origin이 확정되면 같은 client에 origin을 추가합니다.
-- `SESSION_SECRET`은 repository 밖 Cloudflare secret으로만 저장합니다. `GOOGLE_CLIENT_ID`와 D1 database ID는 Secret이 아니지만 실제 발급값이 확인된 뒤에만 설정합니다.
-- 세션 TTL은 아직 제품/security policy 값으로 확정하지 않았으므로 임의 기본값을 repository에 고정하지 않습니다.
+- `SESSION_SECRET`은 repository 밖 Cloudflare secret으로만 저장합니다.
+- `GOOGLE_CLIENT_ID`와 `SESSION_TTL_SECONDS`는 실제 값이 확인/결정된 뒤 `scripts/configure-auth-runtime.mjs`로 root public vars에 기록합니다.
+- session TTL은 제품/security policy이므로 저장소가 임의 기본값을 정하지 않습니다. 지원 범위는 기존 session contract와 동일하게 60초~31일입니다.
 
 자세한 provisioning 계약은 `docs/REMOTE_PROVISIONING.md`를 따릅니다.
 
@@ -65,16 +67,26 @@
 - migration 재조회에서 미적용 항목이 없고, metadata-only query로 `users`, `meters`, `meter_members`, `readings`, `d1_migrations` 테이블을 확인했습니다.
 - canonical remote D1에는 local fixture나 synthetic user/meter/reading을 넣지 않았습니다.
 
+## 완료 WorkUnit: Google auth runtime repository preflight
+
+- `scripts/configure-auth-runtime.mjs`가 실제 Google Web Client ID와 명시적인 session TTL만 root `vars`에 기록합니다.
+- `SESSION_SECRET`은 root config에 기록하지 않으며 `--check-env` 검증도 값 자체를 출력하지 않습니다.
+- helper는 잘못된 Client ID/TTL, 기존 다른 Client/TTL의 자동 덮어쓰기, root `SESSION_SECRET` 저장을 거부합니다.
+- `npm run test:provisioning`과 GitHub Actions가 D1 binding/local 격리와 auth runtime guard를 함께 보호합니다.
+
 ## 다음 1순위: 최종용 Google Web Client + preview 실사용자 E2E
 
 완료 조건:
 
 1. 최종용 Google Web Client를 만들고 `https://dev-electricity-meter-tracker.247dev.workers.dev`를 Authorized JavaScript origin으로 등록합니다.
-2. 실제 `GOOGLE_CLIENT_ID`, 강한 `SESSION_SECRET`, 명시적으로 결정한 TTL을 repository 밖 runtime configuration에 주입합니다.
-3. 실제 Google 로그인 → first user 생성 → first meter 생성 → reading 저장 → 새로고침 후 동일 raw reading/계산 복원까지 dev origin에서 검증합니다.
-4. 두 번째 테스트 사용자가 없다면 sharing 권한 검증을 억지로 포함하지 않습니다. 별도 사용자로 검증할 수 있을 때 owner/viewer 격리를 확인합니다.
-5. Secret, cookie, 실제 user row/reading을 commit/log에 노출하지 않습니다.
-6. 실제 사용자가 생긴 뒤에는 dev 검증 때문에 해당 canonical DB를 임의 초기화하거나 fixture로 덮지 않습니다.
+2. session lifetime을 명시적으로 결정합니다. 저장소는 숨은 기본 TTL을 선택하지 않습니다.
+3. 실제 `GOOGLE_CLIENT_ID`와 선택한 TTL을 `node scripts/configure-auth-runtime.mjs --write <client-id> <ttl-seconds>`로 public runtime config에 반영합니다.
+4. 강한 `SESSION_SECRET`을 repository 밖 Cloudflare secret으로 주입합니다.
+5. 현재 dev alias에 auth runtime이 포함된 Worker version을 올리되 production deploy는 하지 않습니다.
+6. 실제 Google 로그인 → first user 생성 → first meter 생성 → reading 저장 → 새로고침 후 동일 raw reading/계산 복원까지 dev origin에서 검증합니다.
+7. 두 번째 테스트 사용자가 없다면 sharing 권한 검증을 억지로 포함하지 않습니다. 별도 사용자로 검증할 수 있을 때 owner/viewer 격리를 확인합니다.
+8. Secret, cookie, ID token, 실제 user row/reading을 commit/log에 노출하지 않습니다.
+9. 실제 사용자가 생긴 뒤에는 dev 검증 때문에 canonical DB를 임의 초기화하거나 fixture로 덮지 않습니다.
 
 ## 그 이후 후보
 

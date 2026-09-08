@@ -4,7 +4,7 @@
 
 ## 현재 상태
 
-**Architecture baseline + live mobile UI + 순수 usage/calendar/검침주기/forecast domain + Worker API + D1 persistence/runtime + Google identity/session + server-side owner/viewer meter/readings CRUD baseline** 단계입니다. UI는 더 이상 `src/demo.ts`의 고정 SAMPLE을 정본으로 사용하지 않고 same-origin API의 raw meter/readings와 기존 순수 domain 계산을 사용합니다.
+**Architecture baseline + live mobile UI + 순수 usage/calendar/검침주기/forecast domain + Worker API + D1 persistence/runtime + Google identity/session + server-side owner/viewer meter/readings CRUD + canonical remote D1 baseline** 단계입니다. UI는 더 이상 `src/demo.ts`의 고정 SAMPLE을 정본으로 사용하지 않고 same-origin API의 raw meter/readings와 기존 순수 domain 계산을 사용합니다.
 
 - 인증 환경 미설정 / signed-out / signed-in / loading / API error를 구분하며 Google Client ID가 실제 환경에 있을 때만 GIS 로그인 버튼을 로드합니다.
 - 로그인 사용자는 접근 가능한 owner/viewer meter만 선택합니다. owner는 기록·설정 mutation이 가능하고 viewer는 조회 전용이며 최종 권한 판정은 계속 서버/API에서 강제합니다.
@@ -18,8 +18,8 @@
 - `src/persistence/d1.ts`는 D1-compatible prepared query와 DB row 검증 경계를 소유합니다. Google subject/internal user, owner/viewer access lookup, meter/readings CRUD와 reading 이웃 조회를 담당합니다.
 - `src/auth/google.ts`는 Google GIS ID token의 RS256/JWK 서명과 issuer/audience/expiry/subject를 검증하고, `src/auth/session.ts`는 Web Crypto HMAC으로 `__Host-em_session` cookie를 서명·검증합니다.
 - `src/worker.ts`는 동일-origin API request owner입니다. health/auth baseline과 `/api/meters*` product API를 제공하며 모든 meter/readings route에서 내부 session과 owner/viewer 권한을 서버에서 강제합니다. local D1/auth 검증 probe는 명시적 local gate가 없으면 404입니다.
-- `migrations/0001_initial.sql`은 `users`, `meters`, `meter_members`, `readings`의 첫 D1 schema baseline입니다. 실제 Cloudflare D1 database를 생성하거나 production/preview binding으로 연결하지는 않았습니다.
-- `wrangler.local.jsonc`, `persistence-tests/local_fixture.sql`, `persistence-tests/local_runtime_check.sh`는 local D1/workerd 검증 전용입니다. root `wrangler.jsonc`의 production/preview 설정과 분리되어 있으며 local config를 배포 대상으로 사용하지 않습니다.
+- `migrations/0001_initial.sql`은 `users`, `meters`, `meter_members`, `readings`의 첫 D1 schema baseline입니다. canonical Cloudflare D1은 실제 계정에 생성되어 root `DB` binding으로 연결됐고 `0001_initial.sql` remote migration도 적용됐습니다. synthetic fixture는 remote canonical D1에 넣지 않습니다.
+- `wrangler.local.jsonc`, `persistence-tests/local_fixture.sql`, `persistence-tests/local_runtime_check.sh`는 local D1/workerd 검증 전용입니다. root `wrangler.jsonc`의 canonical remote D1과 분리되어 있으며 local config를 배포 대상으로 사용하지 않습니다.
 - 개발용 preview는 Cloudflare Workers Builds와 연결되어 있습니다. `main`은 production 기준, `work/*`는 non-production preview이며 고정 개발 주소는 `https://dev-electricity-meter-tracker.247dev.workers.dev`입니다. Dashboard 설정은 저장소 밖 상태이므로 문제 조사 시 실제 Cloudflare 설정을 다시 확인합니다.
 
 ## 실행과 검증
@@ -35,6 +35,7 @@ npm run dev
 
 ```sh
 npm run build
+npm run test:provisioning
 python persistence-tests/schema_test.py
 npm run test:worker
 npm run test:domain
@@ -44,13 +45,14 @@ npm run test:ui
 
 - `npm run typecheck`: strict TypeScript 검사. Vite 변환과 별도로 실행합니다.
 - `npm run build`: 타입 검사 후 `dist/` 정적 산출물 생성.
+- `npm run test:provisioning`: canonical remote D1 binding/local D1 격리와 Google auth runtime public vars/TTL/secret 경계를 검증합니다. 실제 Secret이나 Provider 호출은 하지 않습니다.
 - `python persistence-tests/schema_test.py`: Python 표준 `sqlite3` in-memory DB에 `migrations/0001_initial.sql`을 적용해 table/index/foreign-key/uniqueness/check/cascade와 실제 persistence access/CRUD query-plan/index 계약을 검증합니다. 앱 runtime에는 Python dependency가 없습니다.
 - `npm run test:worker`: `src/worker.ts`와 직접 import되는 persistence/auth/domain module을 `.worker-test/`에 임시 컴파일하고 Node 내장 test runner로 health/error routing, Google JWT signature/claims, session tamper/expiry, GIS CSRF, first-login persistence, owner/viewer/outsider authorization, meter/readings CRUD와 입력 검증을 검증합니다. `.worker-test/`는 커밋하지 않습니다.
 - `npm run test:domain`: `src/domain`만 `.domain-test/`에 임시 컴파일한 뒤 Node 내장 test runner로 순수 domain 테스트를 실행합니다. `.domain-test/`는 커밋하지 않습니다.
 - `npm run test:ui`: 이미 빌드된 `dist/`를 포트 4173 preview 서버로 열어 Playwright 브라우저 검증을 실행합니다. deterministic API/GIS mock으로 auth 미설정/signed-out/login, owner quick write+reload, viewer read-only, 첫 meter 생성, API failure, 월말 설정, 모바일 폭과 keyboard 흐름을 보호합니다. 소스 변경 후에는 먼저 build가 필요합니다.
-- `npm test`: domain, Worker API/persistence/auth/resource, UI 테스트를 순서대로 실행합니다. persistence schema test와 Wrangler local D1/workerd round trip은 GitHub Actions에서 별도 단계로 항상 함께 실행합니다. UI 테스트 전에는 `npm run build`가 선행되어야 합니다.
+- `npm test`: provisioning, domain, Worker API/persistence/auth/resource, UI 테스트를 순서대로 실행합니다. persistence schema test와 Wrangler local D1/workerd round trip은 GitHub Actions에서 별도 단계로 항상 함께 실행합니다. UI 테스트 전에는 `npm run build`가 선행되어야 합니다.
 - Playwright는 iPhone 13 프로필의 Chromium/WebKit과 1440×900 데스크톱 Chromium에서 실행합니다. 긴 숫자는 390px 및 320px에서도 검사합니다.
-- `.github/workflows/verify.yml`은 `main`, `work/**`, pull request에서 build, persistence schema/query plan, Worker API/persistence/auth/resource, pinned Wrangler `4.129.0` local D1/workerd round trip, UTC/Asia-Seoul domain, Chromium/WebKit UI 테스트를 검증합니다.
+- `.github/workflows/verify.yml`은 `main`, `work/**`, pull request에서 build, canonical provisioning contract, persistence schema/query plan, Worker API/persistence/auth/resource, pinned Wrangler `4.129.0` local D1/workerd round trip, UTC/Asia-Seoul domain, Chromium/WebKit UI 테스트를 검증합니다.
 - `persistence-tests/local_runtime_check.sh`는 동일한 local persistence directory에서 D1 migration과 synthetic fixture를 적용한 뒤 persistence/auth probe와 synthetic owner/viewer/outsider signed session을 사용한 meter/readings CRUD HTTP round trip을 실행합니다. root product config에서는 두 dev probe가 모두 404로 닫혀 있는지 확인하며 remote D1이나 배포는 사용하지 않습니다.
 - GitHub Actions의 local D1/workerd 검증은 실제 Cloudflare local runtime evidence이지만 Linux runner에서 수행되므로 Windows 고유 filesystem/process 동작의 증거로 확대 해석하지 않습니다.
 - 모바일 프로필은 브라우저 에뮬레이션입니다. 실제 iPhone 키보드, Safari 도구막대, 홈 인디케이터의 safe-area 동작은 실기기 증거가 아닙니다.
@@ -90,6 +92,7 @@ npm run test:ui
 - meter 삭제는 그 meter의 viewer grant와 reading을 cascade 삭제합니다. user 삭제는 참조 meter/member가 남아 있으면 막혀 orphan ownership을 만들지 않습니다.
 - 누적값 역행 같은 순서 기반 검증은 SQL trigger로 중복 구현하지 않고 usage/API domain에서 강제합니다.
 - `wrangler.local.jsonc`의 D1 ID와 fixture는 local-only test material입니다. 실제 remote D1 resource ID나 사용자 데이터가 아닙니다.
+- root `wrangler.jsonc`의 `DB`는 최종 운영본까지 유지할 canonical remote D1을 가리킵니다. remote schema는 versioned migration으로만 변경하고 synthetic fixture를 적용하지 않습니다.
 
 ## Google identity/session baseline
 
@@ -99,7 +102,8 @@ npm run test:ui
 - login POST의 `g_csrf_token`은 cookie/body double-submit 값이 정확히 하나씩 존재하고 같아야 합니다. frontend GIS callback 경로도 same-origin token을 cookie/body에 함께 전달해 동일 서버 검증을 재사용합니다. 로그인 POST는 `application/x-www-form-urlencoded`와 제한된 body 크기만 허용합니다.
 - 최초 정상 로그인은 내부 UUID 후보를 만들고 D1의 unique Google subject 계약을 이용해 한 user row로 수렴합니다. 재로그인은 기존 내부 `user_id`를 재사용합니다.
 - 앱 session은 `__Host-em_session` cookie이며 Web Crypto HMAC-SHA256 서명, `Secure`, `HttpOnly`, `SameSite=Lax`, `Path=/`, Domain 미설정 계약입니다. `SESSION_SECRET`과 `SESSION_TTL_SECONDS`는 환경에서 주입하며 실제 Secret을 저장소에 넣지 않습니다.
-- 실제 Google Client ID, `SESSION_SECRET`, remote D1 binding, 실제 사용자 데이터와 Provider 로그인 E2E는 아직 구성하지 않았습니다. `.dev.vars`와 실제 `.env`는 Git에서 제외합니다.
+- canonical remote D1은 구성됐습니다. 실제 Google Client ID, `SESSION_SECRET`, 명시적으로 선택한 session TTL과 Provider 로그인 E2E는 아직 구성하지 않았습니다. `.dev.vars`와 실제 `.env`는 Git에서 제외합니다.
+- `scripts/configure-auth-runtime.mjs`는 실제 Google Web Client ID와 명시적인 TTL만 root public vars에 기록하고 `SESSION_SECRET`을 저장소에 넣지 않습니다. 이미 다른 Client ID/TTL이 있으면 자동 덮어쓰지 않습니다.
 - Google GIS 서버 검증 근거는 `2026-09-08` 확인한 Google 공식 문서, Worker crypto/secret 근거는 같은 날 확인한 Cloudflare 공식 문서입니다.
   - https://developers.google.com/identity/gsi/web/guides/verify-google-id-token
   - https://developers.google.com/identity/gsi/web/reference/html-reference
@@ -146,6 +150,7 @@ npm run test:ui
 | `src/persistence/d1.ts` | D1-compatible prepared read/write query, user/meter/access/reading persistence와 DB row 검증. UI/domain에서 SQL이나 binding을 직접 사용하지 않게 하는 persistence owner |
 | `migrations/` | D1 schema/migration source. 현재는 users/meters/viewer grants/raw readings와 DB-level integrity/index 계약만 소유 |
 | `wrangler.local.jsonc`, `persistence-tests/local_fixture.sql`, `persistence-tests/local_runtime_check.sh` | local D1/workerd integration evidence 전용. remote resource/config의 source가 아님 |
+| `scripts/configure-canonical-d1.mjs`, `scripts/configure-auth-runtime.mjs` | 실제로 확인된 canonical remote identity/public auth vars만 root config에 기록하는 provisioning guard. Secret이나 remote mutation 자체를 소유하지 않음 |
 | 향후 tariff policy | usage와 별도 모듈. 정책 version/effective date, 누진·계절·기본요금·조정요금·세금·기금·반올림을 소유 |
 
 ## 향후 production 방향
@@ -154,10 +159,10 @@ npm run test:ui
 Frontend / 향후 PWA
   → Cloudflare Workers Static Assets
   → 동일 origin의 Worker /api 경계
-  → D1
+  → canonical D1
 ```
 
-root `wrangler.jsonc`는 `./dist` Static Assets와 `src/worker.ts` module entry를 함께 배포하고 `/api/*`만 Worker-first로 라우팅합니다. 정적 asset 요청은 기본 asset-first 경로를 유지합니다. **실제 D1 database/binding과 Google auth 환경값은 아직 없습니다.** `wrangler.local.jsonc`는 local simulation 전용이며 production/preview 배포 설정을 대체하지 않습니다. Workers Builds Git 연동과 non-production preview는 사용하지만 정식 production 릴리스는 아직 하지 않았습니다.
+root `wrangler.jsonc`는 `./dist` Static Assets와 `src/worker.ts` module entry를 함께 배포하고 `/api/*`만 Worker-first로 라우팅합니다. 정적 asset 요청은 기본 asset-first 경로를 유지합니다. **canonical D1 database/binding/migration은 구성됐고 Google auth runtime 값과 실제 Provider 로그인은 아직 없습니다.** `wrangler.local.jsonc`는 local simulation 전용이며 canonical remote resource를 대체하지 않습니다. Workers Builds Git 연동과 non-production preview는 사용하지만 정식 production 릴리스는 아직 하지 않았습니다.
 
 2026-09-08 Cloudflare 공식 문서 확인 기준 Workers Free는 Worker 실행 요청 100,000회/일, HTTP 요청당 CPU 10 ms이고 Static Assets 요청은 무료·무제한입니다. Static Assets는 Free에서 Worker version당 20,000 files, 개별 파일 25 MiB 제한입니다.
 
@@ -174,7 +179,7 @@ D1 local development는 Wrangler의 local simulation을 사용하며 remote data
 
 검침 의미: 21일 마감의 표시 기간은 전월 22일~당월 21일입니다. 설정은 1~31일 또는 별도 월말을 지원하며, 고정 일자가 없는 달에는 해당 월 마지막 날을 실제 마감일로 사용합니다. 경계값은 실제 경계 기록 → 전후 기록 보간 → 자료 부족 시 미산출 순서입니다. 최근 구간 소비 속도, 최근 일평균, 주기 평균, 마감 예상, 30일 환산은 서로 다른 값으로 유지합니다.
 
-이번 단계에 없는 기능: 실제 전기요금 계산, 실제 Google OAuth Client ID/SESSION_SECRET·Provider 로그인 E2E, 실제 remote D1 database/binding, 실제 owner/viewer 공유 초대·해제 관리 UI/API, production service worker·push·background sync·정식 production 배포.
+이번 단계에 없는 기능: 실제 전기요금 계산, 실제 Google OAuth Client ID/SESSION_SECRET·Provider 로그인 E2E, 실제 owner/viewer 공유 초대·해제 관리 UI/API, production service worker·push·background sync·정식 production 배포.
 
 ## Public 저장소
 
