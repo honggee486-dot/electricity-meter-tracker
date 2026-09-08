@@ -1,112 +1,431 @@
-import { demo } from './demo';
+import { api, ApiError, type AuthConfigResponse, type BillingClose, type MeterResource, type ReadingResource } from './api';
+import { getBillingCycleContext } from './domain/billingCycle';
+import { splitUsageIntervalByLocalDate } from './domain/dailyUsage';
+import { calculateUsageForecast, type UsageForecastSnapshot } from './domain/forecast';
+import { parseCumulativeKwhToWh, type MeterReadingPoint } from './domain/usage';
 import './style.css';
+import './live.css';
+
+interface GoogleCredentialResponse { credential: string; }
+interface GoogleIdClient {
+  initialize(options: { client_id: string; callback: (response: GoogleCredentialResponse) => void }): void;
+  renderButton(parent: HTMLElement, options: { theme: string; size: string; text: string; shape: string; width: number }): void;
+}
+declare global {
+  interface Window { google?: { accounts: { id: GoogleIdClient } }; }
+}
 
 type Screen = 'home' | 'records' | 'analysis' | 'settings';
+type Phase = 'loading' | 'auth-unconfigured' | 'signed-out' | 'ready' | 'error';
+type Notice = { kind: 'success' | 'error'; text: string } | null;
+
+interface State {
+  phase: Phase;
+  authConfig: AuthConfigResponse | null;
+  meters: MeterResource[];
+  selectedMeterId: string | null;
+  readings: ReadingResource[];
+  notice: Notice;
+  errorText: string;
+}
+
+interface DailyAggregate {
+  localDate: string;
+  usageWh: number;
+  interpolated: boolean;
+}
+
 const screens: { id: Screen; label: string; icon: string }[] = [
   { id: 'home', label: '홈', icon: '<path d="m3 10 9-7 9 7v11h-6v-7H9v7H3z"/>' },
   { id: 'records', label: '기록', icon: '<rect x="5" y="3" width="14" height="18" rx="2"/><path d="M9 8h6M9 12h6M9 16h4"/>' },
   { id: 'analysis', label: '분석', icon: '<path d="M4 20V10m8 10V4m8 16v-7"/>' },
   { id: 'settings', label: '설정', icon: '<path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3"/><circle cx="15" cy="17" r="3"/>' },
 ];
+
 const app = document.querySelector<HTMLDivElement>('#app')!;
-const quantity = (value: string, unit: string) => `<span class="quantity">${value}<small>${unit}</small></span>`;
-const metric = (label: string, value: string, unit: string) => `<div><dt>${label}</dt><dd>${quantity(value, unit)}</dd></div>`;
-const formatTime = (at: string) => new Intl.DateTimeFormat('ko-KR', {
-  timeZone: demo.meter.timezone, month: '2-digit', day: '2-digit',
-  hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
-}).format(new Date(at));
+const state: State = {
+  phase: 'loading', authConfig: null, meters: [], selectedMeterId: null,
+  readings: [], notice: null, errorText: '',
+};
 
-app.innerHTML = `
-  <div class="shell">
-    <header class="masthead"><a href="#home" class="brand" aria-label="우리집 전기 홈"><span class="brand-mark" aria-hidden="true">↗</span> 전기 기록</a><span class="demo-tag">SAMPLE / DEMO</span></header>
-    <p class="demo-notice">가상 데이터로 둘러보는 UI · 새로고침하면 초기화됩니다.</p>
-    <main id="main">
-      <section id="home" class="screen" aria-labelledby="home-title">
-        <div class="page-heading"><p class="eyebrow">가볍게 기록하는 에너지 일상</p><h1 id="home-title" tabindex="-1">${demo.meter.name}</h1><p class="cycle-label">현재 검침기간 <strong>${demo.cycle.label}</strong><span>샘플</span></p></div>
-        <form id="reading-form" class="reading-form">
-          <label for="meter-reading">현재 계량기</label>
-          <div class="reading-input"><input id="meter-reading" name="reading" type="text" inputmode="decimal" pattern="[0-9]+([.][0-9]+)?" maxlength="15" autocomplete="off" spellcheck="false" placeholder="${demo.readings[0].value}" aria-describedby="reading-hint" required /><span>kWh</span></div>
-          <p id="reading-hint">기록 시각은 자동 · 15자 이내 숫자와 소수점</p>
-          <button id="record-button" class="primary" type="submit" disabled>기록하기 <span aria-hidden="true">↗</span></button>
-          <p id="record-status" class="status" role="status" aria-live="polite"></p>
-        </form>
-        <section class="interval" aria-labelledby="interval-title"><div class="section-heading"><h2 id="interval-title">직전 기록 이후</h2><span class="subtle">고정 샘플</span></div><p class="hero-number">${quantity(demo.interval.usage, 'kWh')}</p><dl class="interval-details">${metric('경과시간', demo.interval.elapsed, '')}${metric('평균 소비전력', demo.interval.power, 'W')}</dl></section>
-        <section class="cycle-summary" aria-labelledby="cycle-title"><div class="section-heading"><h2 id="cycle-title">이번 검침주기</h2><span class="deadline">마감까지 ${demo.cycle.remainingDays}일</span></div><dl class="summary-list">${metric('현재까지', demo.cycle.usage, 'kWh')}${metric('최근 일평균', demo.recentDailyAverage, 'kWh/일')}${metric('마감 예상 사용량', demo.forecastUsage, 'kWh')}${metric('예상 전기요금', `약 ${demo.estimatedBill}`, '원')}</dl><p class="note">모든 지표는 고정 예시이며 입력값으로 계산하지 않습니다. 예상 요금은 실제 한전 요금표를 적용하지 않은 샘플입니다.</p></section>
-      </section>
-      <section id="records" class="screen" aria-labelledby="records-title" hidden>
-        <div class="page-heading"><p class="eyebrow">지나가며 남긴 숫자들</p><h1 id="records-title" tabindex="-1">기록</h1><p>누적 계량값 · ${demo.meter.timezone}</p></div>
-        <p class="note">아래 기록은 모두 데모입니다. 체험 입력은 이 페이지를 여는 동안에만 남으며, 수정·삭제는 아직 지원하지 않습니다.</p>
-        <ul id="reading-list" class="reading-list" aria-label="계량기 기록"></ul>
-      </section>
-      <section id="analysis" class="screen" aria-labelledby="analysis-title" hidden>
-        <div class="page-heading"><p class="eyebrow">사용량을 읽는 여러 기준</p><h1 id="analysis-title" tabindex="-1">분석</h1><p>계산 결과가 아닌 고정 샘플입니다.</p></div>
-        <dl class="analysis-list">
-          <div><dt>최근 측정 구간 <small>${demo.interval.elapsed}</small></dt><dd>${quantity(demo.interval.usage, 'kWh')}<small>평균 소비전력 ${demo.interval.power} W</small></dd></div>
-          ${metric('최근 일평균', demo.recentDailyAverage, 'kWh/일')}
-          ${metric('현재 검침주기 평균', demo.cycleDailyAverage, 'kWh/일')}
-          <div class="forecast"><dt>검침 마감 예상 <small>${demo.cycle.label}</small></dt><dd>${quantity(demo.forecastUsage, 'kWh')}</dd></div>
-          <div class="normalized"><dt>30일 환산 <small>기간을 맞춰 비교하는 참고값</small></dt><dd>${quantity(demo.normalized30DayUsage, 'kWh')}</dd></div>
-        </dl>
-        <p class="note">예측 신뢰도 안내 예시: 기록 기간이 짧으면 신뢰도가 낮습니다. 실제 신뢰도 판단과 예측은 아직 구현하지 않았습니다.</p>
-        <section class="daily" aria-labelledby="daily-title"><h2 id="daily-title">일별 사용량</h2><p class="note">경계 측정과 보간의 표시 방식 예시입니다.</p><ul class="daily-list">${demo.daily.map(day => `<li><span>${day.date}</span><span class="daily-bar" aria-hidden="true"><i style="width:${Number(day.usage) / 20 * 100}%"></i></span><strong>${day.basis === 'interpolated' ? '약 ' : ''}${day.usage}<small> kWh</small></strong><span class="basis">${day.basis === 'interpolated' ? '추정·보간' : '경계 측정'}</span></li>`).join('')}</ul></section>
-      </section>
-      <section id="settings" class="screen" aria-labelledby="settings-title" hidden>
-        <div class="page-heading"><p class="eyebrow">내 계량기의 기준</p><h1 id="settings-title" tabindex="-1">설정</h1><p>읽기 전용 데모 · 변경은 아직 지원하지 않습니다.</p></div>
-        <dl class="settings-list"><div><dt>계량기 이름</dt><dd>${demo.meter.name}</dd></div><div><dt>검침 마감일</dt><dd>매월 ${demo.meter.closingDay}일</dd></div><div><dt>시간대</dt><dd>${demo.meter.timezone}</dd></div></dl>
-        <aside class="period-example"><h2>검침기간 예</h2><p>${demo.cycle.example}</p><p class="note">마감일 다음 날부터 다음 마감일까지 표시합니다. 29~31일이 없는 달의 처리 정책은 아직 미정입니다.</p></aside>
-        <section class="sharing" aria-labelledby="sharing-title"><div class="section-heading"><h2 id="sharing-title">공유</h2><span class="subtle">UI 예시</span></div><p class="share-person"><span>${demo.viewer}<small>가상 인물</small></span><span>조회 가능 · viewer</span></p><button class="secondary" type="button" disabled>사용자 초대 · 준비 중</button><p class="note">소유자(owner)와 조회자(viewer)만을 기본 후보로 둡니다. 실제 초대 및 접근 권한은 연결되지 않았습니다.</p></section>
-      </section>
-    </main>
-    <nav class="bottom-nav" aria-label="주 메뉴">${screens.map(screen => `<a href="#${screen.id}" data-screen="${screen.id}" ${screen.id === 'home' ? 'aria-current="page"' : ''}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${screen.icon}</svg><span>${screen.label}</span></a>`).join('')}</nav>
-  </div>`;
+const escapeHtml = (value: string): string => value.replace(/[&<>'"]/g, char => ({
+  '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;',
+})[char]!);
+const selectedMeter = (): MeterResource | null => state.meters.find(meter => meter.meterId === state.selectedMeterId) ?? null;
+const closeSetting = (meter: MeterResource): BillingClose => meter.billingClose;
+const points = (): MeterReadingPoint[] => [...state.readings]
+  .sort((a, b) => a.measuredAtMs - b.measuredAtMs)
+  .map(reading => ({ measuredAtMs: reading.measuredAtMs, cumulativeWh: reading.cumulativeWh }));
+const formatCumulativeKwh = (wh: number): string => {
+  const whole = Math.floor(wh / 1000);
+  const fraction = wh % 1000;
+  return fraction === 0 ? String(whole) : `${whole}.${String(fraction).padStart(3, '0').replace(/0+$/, '')}`;
+};
+const formatKwh = (wh: number | null, digits = 1): string => wh === null ? '자료 부족' : `${(wh / 1000).toFixed(digits)} kWh`;
+const formatPower = (watts: number | null): string => watts === null ? '자료 부족' : `${Math.round(watts).toLocaleString('ko-KR')} W`;
+const formatHours = (ms: number): string => {
+  const hours = ms / 3_600_000;
+  if (hours < 24) return `${hours.toFixed(hours < 10 ? 1 : 0)}시간`;
+  return `${(hours / 24).toFixed(1)}일`;
+};
+const closeLabel = (close: BillingClose): string => close.kind === 'month-end' ? '매월 월말' : `매월 ${close.day}일`;
+const parseCloseValue = (value: string): BillingClose => value === 'month-end'
+  ? { kind: 'month-end' }
+  : { kind: 'day', day: Number(value) };
+const closeSelectOptions = (selected: BillingClose = { kind: 'day', day: 21 }): string => [
+  `<option value="month-end"${selected.kind === 'month-end' ? ' selected' : ''}>월말</option>`,
+  ...Array.from({ length: 31 }, (_, index) => {
+    const day = index + 1;
+    return `<option value="${day}"${selected.kind === 'day' && selected.day === day ? ' selected' : ''}>${day}일</option>`;
+  }),
+].join('');
+const friendlyError = (error: unknown): string => {
+  if (error instanceof ApiError) {
+    if (error.status === 409) return '같은 시각의 기록이 있거나 누적값 순서와 맞지 않습니다.';
+    if (error.status === 403) return '이 작업은 계량기 소유자만 할 수 있습니다.';
+    if (error.status === 401) return '로그인이 만료되었습니다. 다시 로그인해 주세요.';
+    if (error.status === 503) return '이 환경의 인증 또는 데이터 연결이 아직 준비되지 않았습니다.';
+    return `요청을 처리하지 못했습니다. (${error.code})`;
+  }
+  return '네트워크 또는 앱 오류로 요청을 처리하지 못했습니다.';
+};
 
-// Transient UI entries only: deliberately no repository, persistence, or calculation service.
-const readings: { at: string; value: string; source: string }[] = demo.readings.map(reading => ({ ...reading, source: '샘플' }));
-function renderReadings() {
-  const list = document.querySelector<HTMLUListElement>('#reading-list')!;
-  list.replaceChildren(...readings.map(reading => {
-    const item = document.createElement('li');
-    const time = document.createElement('time');
-    time.dateTime = reading.at;
-    time.textContent = formatTime(reading.at);
-    const source = document.createElement('small');
-    source.textContent = reading.source;
-    const value = document.createElement('strong');
-    value.textContent = reading.value;
-    const unit = document.createElement('small');
-    unit.textContent = ' kWh';
-    value.append(unit);
-    const label = document.createElement('span');
-    label.append(time, source);
-    item.append(label, value);
-    return item;
-  }));
+function buildDailyAggregates(readingPoints: readonly MeterReadingPoint[], timeZone: string): DailyAggregate[] {
+  const aggregates = new Map<string, DailyAggregate>();
+  for (let index = 1; index < readingPoints.length; index += 1) {
+    const split = splitUsageIntervalByLocalDate(readingPoints[index - 1], readingPoints[index], timeZone);
+    for (const day of split.days) {
+      const current = aggregates.get(day.localDate);
+      if (current) {
+        current.usageWh += day.usageWh;
+        current.interpolated ||= day.provenance === 'interpolated';
+      } else {
+        aggregates.set(day.localDate, {
+          localDate: day.localDate,
+          usageWh: day.usageWh,
+          interpolated: day.provenance === 'interpolated',
+        });
+      }
+    }
+  }
+  return [...aggregates.values()].sort((a, b) => b.localDate.localeCompare(a.localDate)).slice(0, 7);
 }
-renderReadings();
 
-const input = document.querySelector<HTMLInputElement>('#meter-reading')!;
-const button = document.querySelector<HTMLButtonElement>('#record-button')!;
-const status = document.querySelector<HTMLParagraphElement>('#record-status')!;
-// Input syntax only. Monotonic readings, precision, and time validation belong to the future usage domain.
-const validInput = () => input.value.length <= 15 && /^[0-9]+(?:\.[0-9]+)?$/.test(input.value);
-input.addEventListener('input', () => {
-  input.classList.toggle('long-value', input.value.length > 9);
-  button.disabled = !validInput();
-  status.textContent = '';
-});
-document.querySelector<HTMLFormElement>('#reading-form')!.addEventListener('submit', event => {
+function forecastFor(meter: MeterResource): UsageForecastSnapshot | null {
+  const readingPoints = points();
+  return readingPoints.length === 0 ? null : calculateUsageForecast(readingPoints, closeSetting(meter), meter.timezone, 7);
+}
+
+function shell(content: string, includeNav = false): string {
+  return `<div class="shell">
+    <header class="masthead"><a href="#home" class="brand" aria-label="전기 기록 홈"><span class="brand-mark" aria-hidden="true">↗</span> 전기 기록</a>${state.phase === 'ready' ? '<button id="logout-button" class="text-button" type="button">로그아웃</button>' : ''}</header>
+    <main id="main">${content}</main>
+    ${includeNav ? `<nav class="bottom-nav" aria-label="주 메뉴">${screens.map(screen => `<a href="#${screen.id}" data-screen="${screen.id}" ${screen.id === 'home' ? 'aria-current="page"' : ''}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${screen.icon}</svg><span>${screen.label}</span></a>`).join('')}</nav>` : ''}
+  </div>`;
+}
+
+function renderAuthState(title: string, body: string): void {
+  app.innerHTML = shell(`<section class="state-panel" aria-labelledby="state-title"><p class="eyebrow">전기 계량기 기록</p><h1 id="state-title">${escapeHtml(title)}</h1>${body}</section>`);
+}
+
+function render(): void {
+  if (state.phase === 'loading') {
+    renderAuthState('불러오는 중', '<p class="state-copy">로그인과 계량기 정보를 확인하고 있습니다.</p>');
+    return;
+  }
+  if (state.phase === 'auth-unconfigured') {
+    renderAuthState('아직 연결 준비 중입니다', '<p class="state-copy">이 preview 환경에는 Google 로그인 또는 데이터 저장소 설정이 아직 연결되지 않았습니다.</p>');
+    return;
+  }
+  if (state.phase === 'signed-out') {
+    renderAuthState('Google로 로그인', `<p class="state-copy">로그인하면 본인 계량기와 공유받은 계량기만 불러옵니다.</p>${noticeHtml()}<div id="google-button" class="google-login" aria-label="Google 로그인"></div>`);
+    configureGoogleButton();
+    return;
+  }
+  if (state.phase === 'error') {
+    renderAuthState('불러오지 못했습니다', `<p class="state-copy error-text">${escapeHtml(state.errorText)}</p><button id="retry-button" class="primary" type="button">다시 시도</button>`);
+    document.querySelector<HTMLButtonElement>('#retry-button')?.addEventListener('click', () => void bootstrap());
+    return;
+  }
+
+  if (state.meters.length === 0) {
+    app.innerHTML = shell(`<section class="state-panel" aria-labelledby="create-title"><p class="eyebrow">첫 계량기</p><h1 id="create-title">계량기를 추가하세요</h1><p class="state-copy">이름, 시간대, 검침 마감 기준만 정하면 바로 기록을 시작할 수 있습니다.</p>
+      ${noticeHtml()}
+      <form id="meter-create-form" class="stack-form">
+        <label>계량기 이름<input name="name" required maxlength="80" value="우리집 전기"></label>
+        <label>시간대<input name="timezone" required value="Asia/Seoul"></label>
+        <label>검침 마감<select name="billingClose">${closeSelectOptions()}</select></label><p class="field-help">29~31일이 없는 달은 그 달 월말로 자동 보정됩니다. 월말을 고르면 매달 실제 마지막 날을 사용합니다.</p>
+        <button class="primary" type="submit">계량기 만들기</button>
+      </form></section>`);
+    bindLogout();
+    document.querySelector<HTMLFormElement>('#meter-create-form')?.addEventListener('submit', event => void createMeter(event));
+    return;
+  }
+
+  const meter = selectedMeter() ?? state.meters[0];
+  state.selectedMeterId = meter.meterId;
+  let forecast: UsageForecastSnapshot | null = null;
+  let daily: DailyAggregate[] = [];
+  try {
+    forecast = forecastFor(meter);
+    daily = buildDailyAggregates(points(), meter.timezone);
+  } catch (error) {
+    state.phase = 'error';
+    state.errorText = friendlyError(error);
+    render();
+    return;
+  }
+  const latest = forecast?.latestReading ?? null;
+  const latestInterval = forecast?.latestInterval ?? null;
+  const liveContext = getBillingCycleContext(Date.now(), closeSetting(meter), meter.timezone);
+  const liveCycle = liveContext.current;
+  const forecastCycle = forecast?.currentCycle ?? null;
+  const currentCycle = forecastCycle
+    && forecastCycle.cycle.startMs === liveCycle.startMs
+    && forecastCycle.cycle.endMs === liveCycle.endMs
+    ? forecastCycle
+    : null;
+  const cycle = liveCycle;
+  const isOwner = meter.role === 'owner';
+  const readonlyNote = isOwner ? '' : '<span class="role-badge viewer">viewer · 조회 전용</span>';
+  const readingRows = [...state.readings].sort((a, b) => b.measuredAtMs - a.measuredAtMs);
+  const dateTime = new Intl.DateTimeFormat('ko-KR', {
+    timeZone: meter.timezone, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  });
+  const comparison = currentCycle ? forecast?.comparison : null;
+  const confidence = currentCycle ? forecast?.confidence : null;
+
+  app.innerHTML = shell(`
+    <section class="meter-toolbar" aria-label="현재 계량기"><label for="meter-select">계량기</label><select id="meter-select">${state.meters.map(item => `<option value="${escapeHtml(item.meterId)}"${item.meterId === meter.meterId ? ' selected' : ''}>${escapeHtml(item.name)} · ${item.role}</option>`).join('')}</select>${readonlyNote}</section>
+    ${noticeHtml()}
+    <section id="home" class="screen" aria-labelledby="home-title">
+      <div class="page-heading"><p class="eyebrow">빠른 기록</p><h1 id="home-title" tabindex="-1">${escapeHtml(meter.name)}</h1><p>현재 검침기간 <strong>${cycle.displayStartLocalDate} ~ ${cycle.displayEndLocalDate}</strong></p></div>
+      <form id="reading-form" class="reading-form">
+        <label for="meter-reading">현재 계량기</label>
+        <div class="reading-input"><input id="meter-reading" name="reading" type="text" inputmode="decimal" maxlength="15" autocomplete="off" spellcheck="false" placeholder="${latest ? escapeHtml(formatCumulativeKwh(latest.cumulativeWh)) : '누적 kWh'}" ${isOwner ? '' : 'disabled'} aria-describedby="reading-hint" required><span>kWh</span></div>
+        <p id="reading-hint">${isOwner ? '기록 시각은 자동 · 소수 3자리(1 Wh)까지' : 'viewer는 기록을 추가할 수 없습니다.'}</p>
+        <button id="record-button" class="primary" type="submit" disabled>${isOwner ? '기록하기' : '조회 전용'}</button>
+      </form>
+      <section class="interval" aria-labelledby="interval-title"><div class="section-heading"><h2 id="interval-title">직전 기록 이후</h2><span class="subtle">실제 기록 기준</span></div><p class="hero-number">${latestInterval ? `${latestInterval.usageKwh.toFixed(1)} <small>kWh</small>` : '자료 부족'}</p><dl class="interval-details"><div><dt>경과시간</dt><dd>${latestInterval ? formatHours(latestInterval.elapsedMs) : '자료 부족'}</dd></div><div><dt>평균 소비전력</dt><dd>${formatPower(latestInterval?.averagePowerW ?? null)}</dd></div></dl></section>
+      <section class="cycle-summary" aria-labelledby="cycle-title"><div class="section-heading"><h2 id="cycle-title">이번 검침주기</h2><span class="deadline">마감까지 약 ${Math.max(0, Math.ceil(liveContext.remainingMs / 86_400_000))}일</span></div><dl class="summary-list"><div><dt>최신 기록까지</dt><dd>${formatKwh(currentCycle?.usageToDateWh ?? null)}</dd></div><div><dt>최근 완전 일평균 · 최대 7일</dt><dd>${forecast?.recentDailyAverage ? `${forecast.recentDailyAverage.usageKwhPerDay.toFixed(1)} kWh/일` : '자료 부족'}</dd></div><div><dt>마감 예상 사용량</dt><dd>${formatKwh(currentCycle?.projectedCloseUsageWh ?? null)}</dd></div><div><dt>예상 전기요금</dt><dd>요금 정책 연결 전</dd></div></dl><p class="note">요금은 아직 계산하지 않습니다. 사용량과 예측은 저장된 원본 기록에서 다시 계산합니다.</p></section>
+    </section>
+    <section id="records" class="screen" aria-labelledby="records-title" hidden><div class="page-heading"><p class="eyebrow">원본 기록</p><h1 id="records-title" tabindex="-1">기록</h1><p>${escapeHtml(meter.timezone)}</p></div>${readingRows.length ? `<ul class="reading-list">${readingRows.map(reading => `<li><span><time datetime="${new Date(reading.measuredAtMs).toISOString()}">${dateTime.format(reading.measuredAtMs)}</time><small>실제 측정</small></span><strong>${escapeHtml(formatCumulativeKwh(reading.cumulativeWh))}<small> kWh</small></strong></li>`).join('')}</ul>` : '<p class="empty-state">아직 기록이 없습니다.</p>'}</section>
+    <section id="analysis" class="screen" aria-labelledby="analysis-title" hidden><div class="page-heading"><p class="eyebrow">저장된 기록으로 계산</p><h1 id="analysis-title" tabindex="-1">분석</h1></div><dl class="analysis-list"><div><dt>현재 검침주기 평균</dt><dd>${currentCycle?.averageDailyUsageKwh !== null && currentCycle?.averageDailyUsageKwh !== undefined ? `${currentCycle.averageDailyUsageKwh.toFixed(1)} kWh/일` : '자료 부족'}</dd></div><div class="forecast"><dt>검침 마감 예상</dt><dd>${formatKwh(currentCycle?.projectedCloseUsageWh ?? null)}</dd></div><div class="normalized"><dt>30일 환산</dt><dd>${formatKwh(currentCycle?.normalized30DayUsageWh ?? null)}</dd></div><div><dt>이전 주기 대비</dt><dd>${comparison ? `${comparison.projectedVsPreviousDeltaKwh >= 0 ? '+' : ''}${comparison.projectedVsPreviousDeltaKwh.toFixed(1)} kWh${comparison.projectedVsPreviousPercent === null ? '' : ` · ${comparison.projectedVsPreviousPercent.toFixed(1)}%`}` : '자료 부족'}</dd></div></dl>${confidence ? `<p class="note">관측 범위 ${(confidence.observationCoverageRatio * 100).toFixed(0)}% · 최근 완전 일자 ${confidence.recentFullDaysUsed}/${confidence.requestedRecentDays}일 · 시작 경계 ${confidence.startBoundaryProvenance ?? '자료 부족'}</p>` : '<p class="note">예측 신뢰도를 판단할 기록이 아직 부족합니다.</p>'}<section class="daily"><h2>일별 사용량</h2>${daily.length ? `<ul class="daily-list">${daily.map(day => `<li><span>${day.localDate.slice(5).replace('-', '/')}</span><strong>${(day.usageWh / 1000).toFixed(1)}<small> kWh</small></strong><span class="basis">${day.interpolated ? '추정·보간' : '경계 측정'}</span></li>`).join('')}</ul>` : '<p class="empty-state">일별 사용량을 계산할 구간이 없습니다.</p>'}</section></section>
+    <section id="settings" class="screen" aria-labelledby="settings-title" hidden><div class="page-heading"><p class="eyebrow">계량기 기준</p><h1 id="settings-title" tabindex="-1">설정</h1><p>${isOwner ? '소유자만 변경할 수 있습니다.' : '공유받은 계량기는 조회만 가능합니다.'}</p></div>${isOwner ? `<form id="meter-settings-form" class="stack-form"><label>계량기 이름<input name="name" required maxlength="80" value="${escapeHtml(meter.name)}"></label><label>시간대<input name="timezone" required value="${escapeHtml(meter.timezone)}"></label><label>검침 마감<select name="billingClose">${closeSelectOptions(meter.billingClose)}</select></label><p class="field-help">29~31일이 없는 달은 그 달 월말로 자동 보정됩니다. 월말은 매달 실제 마지막 날입니다.</p><button class="primary" type="submit">설정 저장</button></form>` : `<dl class="settings-list"><div><dt>계량기 이름</dt><dd>${escapeHtml(meter.name)}</dd></div><div><dt>검침 마감</dt><dd>${closeLabel(meter.billingClose)}</dd></div><div><dt>시간대</dt><dd>${escapeHtml(meter.timezone)}</dd></div></dl><p class="note">29~31일 고정 마감은 해당 날짜가 없는 달에 그 달 월말로 자동 보정됩니다. 월말 설정은 매달 실제 마지막 날입니다. viewer 권한은 계량기 설정과 원본 기록을 변경할 수 없습니다.</p>`}</section>
+  `, true);
+
+  bindReadyEvents(isOwner);
+  navigate(false);
+}
+
+function noticeHtml(): string {
+  return state.notice ? `<p class="action-notice ${state.notice.kind}" role="status">${escapeHtml(state.notice.text)}</p>` : '';
+}
+
+function configureGoogleButton(): void {
+  const config = state.authConfig;
+  const host = document.querySelector<HTMLElement>('#google-button');
+  if (!config || !host) return;
+  const csrfToken = crypto.randomUUID();
+  document.cookie = `g_csrf_token=${encodeURIComponent(csrfToken)}; Path=/; SameSite=Strict`;
+
+  const renderButton = (): void => {
+    const googleId = window.google?.accounts.id;
+    if (!googleId || !document.body.contains(host)) return;
+    googleId.initialize({
+      client_id: config.googleClientId,
+      callback: response => void completeGoogleLogin(response.credential, csrfToken),
+    });
+    googleId.renderButton(host, {
+      theme: 'outline', size: 'large', text: 'signin_with', shape: 'rectangular', width: 280,
+    });
+  };
+
+  if (window.google?.accounts.id) {
+    renderButton();
+    return;
+  }
+  const existing = document.querySelector<HTMLScriptElement>('script[data-google-gis]');
+  if (existing) {
+    existing.addEventListener('load', renderButton, { once: true });
+    return;
+  }
+  const script = document.createElement('script');
+  script.src = 'https://accounts.google.com/gsi/client';
+  script.async = true;
+  script.dataset.googleGis = '1';
+  script.addEventListener('load', renderButton, { once: true });
+  script.addEventListener('error', () => {
+    state.notice = { kind: 'error', text: 'Google 로그인 화면을 불러오지 못했습니다.' };
+    render();
+  }, { once: true });
+  document.head.append(script);
+}
+
+async function completeGoogleLogin(credential: string, csrfToken: string): Promise<void> {
+  try {
+    await api.googleLogin(credential, csrfToken);
+    document.cookie = 'g_csrf_token=; Max-Age=0; Path=/; SameSite=Strict';
+    state.notice = null;
+    await bootstrap();
+  } catch (error) {
+    state.notice = { kind: 'error', text: friendlyError(error) };
+    render();
+  }
+}
+
+async function bootstrap(): Promise<void> {
+  state.phase = 'loading';
+  state.notice = null;
+  render();
+  try {
+    await api.session();
+    state.phase = 'ready';
+    await refreshMeters();
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 401) {
+      try {
+        state.authConfig = await api.authConfig();
+        state.phase = 'signed-out';
+        render();
+      } catch (configError) {
+        if (configError instanceof ApiError && configError.status === 503) {
+          state.phase = 'auth-unconfigured';
+          render();
+          return;
+        }
+        fail(configError);
+      }
+      return;
+    }
+    if (error instanceof ApiError && error.status === 503) {
+      state.phase = 'auth-unconfigured';
+      render();
+      return;
+    }
+    fail(error);
+  }
+}
+
+function fail(error: unknown): void {
+  state.phase = 'error';
+  state.errorText = friendlyError(error);
+  render();
+}
+
+async function refreshMeters(preferredMeterId?: string): Promise<void> {
+  state.meters = await api.meters();
+  const preferred = preferredMeterId ?? state.selectedMeterId;
+  state.selectedMeterId = state.meters.some(meter => meter.meterId === preferred)
+    ? preferred
+    : state.meters[0]?.meterId ?? null;
+  state.readings = state.selectedMeterId ? await api.readings(state.selectedMeterId) : [];
+  state.phase = 'ready';
+  render();
+}
+
+async function createMeter(event: SubmitEvent): Promise<void> {
   event.preventDefault();
-  if (!validInput()) return;
-  const value = input.value;
-  readings.unshift({ at: new Date().toISOString(), value, source: '체험 입력 · 임시' });
-  renderReadings();
-  status.textContent = `${value} kWh 체험 기록 완료. 기록 탭에서 확인하세요. 지표는 고정 샘플입니다.`;
-  input.value = '';
-  input.classList.remove('long-value');
-  button.disabled = true;
-});
+  const form = event.currentTarget as HTMLFormElement;
+  const data = new FormData(form);
+  try {
+    const meter = await api.createMeter({
+      name: String(data.get('name') ?? ''),
+      timezone: String(data.get('timezone') ?? ''),
+      billingClose: parseCloseValue(String(data.get('billingClose') ?? '21')),
+    });
+    state.notice = { kind: 'success', text: '계량기를 만들었습니다.' };
+    await refreshMeters(meter.meterId);
+  } catch (error) {
+    state.notice = { kind: 'error', text: friendlyError(error) };
+    render();
+  }
+}
 
-function navigate(moveFocus: boolean) {
+async function saveMeterSettings(event: SubmitEvent): Promise<void> {
+  event.preventDefault();
+  const meter = selectedMeter();
+  if (!meter || meter.role !== 'owner') return;
+  const form = event.currentTarget as HTMLFormElement;
+  const data = new FormData(form);
+  try {
+    const updated = await api.updateMeter(meter.meterId, {
+      name: String(data.get('name') ?? ''),
+      timezone: String(data.get('timezone') ?? ''),
+      billingClose: parseCloseValue(String(data.get('billingClose') ?? '21')),
+    });
+    state.notice = { kind: 'success', text: '계량기 설정을 저장했습니다.' };
+    await refreshMeters(updated.meterId);
+  } catch (error) {
+    state.notice = { kind: 'error', text: friendlyError(error) };
+    render();
+  }
+}
+
+async function createReading(event: SubmitEvent): Promise<void> {
+  event.preventDefault();
+  const meter = selectedMeter();
+  const input = document.querySelector<HTMLInputElement>('#meter-reading');
+  if (!meter || meter.role !== 'owner' || !input || !validReading(input.value)) return;
+  const value = input.value;
+  try {
+    await api.createReading(meter.meterId, { measuredAtMs: Date.now(), cumulativeKwh: value });
+    state.notice = { kind: 'success', text: `${value} kWh 기록을 저장했습니다.` };
+    await refreshMeters(meter.meterId);
+  } catch (error) {
+    state.notice = { kind: 'error', text: friendlyError(error) };
+    render();
+  }
+}
+
+function validReading(value: string): boolean {
+  if (value.length === 0 || value.length > 15 || !/^\d+(?:\.\d{1,3})?$/.test(value)) return false;
+  try {
+    parseCumulativeKwhToWh(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function bindLogout(): void {
+  document.querySelector<HTMLButtonElement>('#logout-button')?.addEventListener('click', async () => {
+    try {
+      await api.logout();
+      await bootstrap();
+    } catch (error) {
+      state.notice = { kind: 'error', text: friendlyError(error) };
+      render();
+    }
+  });
+}
+
+function bindReadyEvents(isOwner: boolean): void {
+  bindLogout();
+  document.querySelector<HTMLSelectElement>('#meter-select')?.addEventListener('change', async event => {
+    state.notice = null;
+    state.selectedMeterId = (event.currentTarget as HTMLSelectElement).value;
+    try {
+      state.readings = await api.readings(state.selectedMeterId);
+      render();
+    } catch (error) {
+      fail(error);
+    }
+  });
+  const input = document.querySelector<HTMLInputElement>('#meter-reading');
+  const button = document.querySelector<HTMLButtonElement>('#record-button');
+  if (input && button && isOwner) {
+    input.addEventListener('input', () => {
+      input.classList.toggle('long-value', input.value.length > 9);
+      button.disabled = !validReading(input.value);
+    });
+  }
+  document.querySelector<HTMLFormElement>('#reading-form')?.addEventListener('submit', event => void createReading(event));
+  document.querySelector<HTMLFormElement>('#meter-settings-form')?.addEventListener('submit', event => void saveMeterSettings(event));
+}
+
+function navigate(moveFocus: boolean): void {
+  if (state.phase !== 'ready' || state.meters.length === 0) return;
   const target = location.hash.slice(1);
   const selected = screens.find(screen => screen.id === target) ?? screens[0];
   for (const screen of screens) document.getElementById(screen.id)!.hidden = screen.id !== selected.id;
@@ -117,5 +436,6 @@ function navigate(moveFocus: boolean) {
   if (moveFocus) document.getElementById(`${selected.id}-title`)!.focus({ preventScroll: true });
   window.scrollTo(0, 0);
 }
+
 window.addEventListener('hashchange', () => navigate(true));
-navigate(false);
+void bootstrap();

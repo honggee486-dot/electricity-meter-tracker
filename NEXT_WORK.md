@@ -1,76 +1,65 @@
 # NEXT_WORK.md
 
-## 현재 완료: architecture / mobile preview / 순수 domain + Worker API + D1 persistence/runtime + Google identity/session + owner/viewer CRUD API
+## 현재 완료: architecture / domain / Worker+D1 / Google session / authorized CRUD / live mobile UI baseline
 
-- [x] Vite + TypeScript + 기본 DOM/CSS 선택, 런타임 프레임워크 없음
-- [x] Workers Static Assets 개발 preview 및 `work/*` 자동 preview 경로 확인
-- [x] UI / usage / tariff / API / auth / persistence 최소 책임 경계 정리
-- [x] 홈 즉시 입력, 자동 시각과 임시 체험 기록, 기록/분석/설정/공유 준비 UI
-- [x] 누적 kWh 문자열 → 정확한 정수 Wh 변환, 절대 epoch-millisecond reading 계약
+- [x] Vite + TypeScript + 기본 DOM/CSS, 런타임 프레임워크 없음
+- [x] Workers Static Assets 개발 preview 및 `work/*` 자동 preview 경로
+- [x] 누적 kWh 문자열 → 정확한 정수 Wh, 절대 epoch-millisecond reading 계약
 - [x] 구간 사용량·경과시간·평균 소비전력, 일자별 분할/보간과 `actual / interpolated` provenance
-- [x] 검침 마감 `1~31일 + 월말`, 월말 자동 보정, 이전/현재/다음 검침주기와 경계 보간
+- [x] 검침 마감 `1~31일 + 월말`, 고정 날짜가 없는 달의 월말 자동 보정, 이전/현재/다음 검침주기와 경계 보간
 - [x] 최근 구간/최근 완전 일자/주기 평균, 마감 예상, 30일 환산, 이전 주기 비교와 confidence evidence
 - [x] 월말/연말/윤년/DST 및 UTC / Asia-Seoul process timezone 자동 검증
-- [x] 동일-origin Worker module entry + `/api/health` + JSON API error baseline
-- [x] `users / meters / meter_members / readings` D1 schema/migration과 최소 index/FK/cascade 계약
-- [x] Google subject / 내부 user ID / owner/viewer meter / ordered reading D1 persistence owner
-- [x] first-login `INSERT OR IGNORE` + 재조회로 Google subject → 내부 user 자동 생성과 동시성 winner 재사용
-- [x] local-only Wrangler D1 migration/fixture/workerd HTTP round trip 및 product-config dev probe isolation
-- [x] Google GIS ID token RS256/JWK 서명 + issuer/audience/expiry/subject 검증
-- [x] GIS `g_csrf_token` cookie/body double-submit 검증과 form body/content-type 제한
-- [x] `__Host-em_session` HMAC-SHA256 서명 세션, `Secure; HttpOnly; SameSite=Lax`, env 기반 TTL/secret 검증
-- [x] `/api/auth/config`, `/api/auth/google`, `/api/auth/session`, `/api/auth/logout` 서버 auth baseline
-- [x] 모든 meter/readings product route에서 내부 session을 먼저 검증하고 owner/viewer 권한을 서버에서 강제
-- [x] owner meter 생성/조회/설정 수정/삭제, viewer 공유 meter 조회, 비회원·공유 해제 접근 차단
-- [x] owner reading 조회/생성/수정/삭제, viewer 읽기 전용, 동일 measured instant와 누적값 역행 방지
-- [x] meter timezone과 `1~31일 + 월말` 설정을 기존 domain 계약으로 API 입력 검증
-- [x] client가 `ownerUserId`, `meterId`, `readingId`를 body로 주입해 ownership을 바꾸지 못하도록 exact body contract 적용
-- [x] authorized CRUD query를 D1 prepared binding owner에 유지하고 기존 index 재사용 query-plan 검증
-- [x] local workerd에서 synthetic owner/viewer/outsider session으로 실제 D1 authorized CRUD HTTP round trip
+- [x] 동일-origin Worker API + D1 schema/migration/persistence + local workerd round trip
+- [x] Google GIS ID token 검증, Google `sub` → 내부 user, 서명 HttpOnly session
+- [x] 모든 meter/readings route의 server-side owner/viewer authorization
+- [x] owner meter/readings CRUD, viewer read-only, exact instant 중복과 누적값 역행 방지
+- [x] frontend same-origin API client가 auth/session, meters, readings만 알고 SQL/D1 세부를 알지 않음
+- [x] UI가 인증 미설정 / signed-out / signed-in / loading / API error를 구분
+- [x] Google GIS callback credential을 기존 CSRF-protected `/api/auth/google`에 전달하고 정상 session을 다시 확인하는 frontend flow
+- [x] 첫 로그인 사용자의 첫 meter 생성, owner/viewer meter 선택, viewer read-only UI
+- [x] owner 홈 빠른 입력이 현재 시각 + 누적 kWh를 POST하고 성공 후 raw readings를 다시 조회
+- [x] 화면 usage/daily/billing/forecast가 `src/demo.ts` 고정 숫자가 아니라 실제 raw readings + meter 설정으로 계산
+- [x] owner 설정에서 `1~31일 + 월말` 선택·저장, viewer 설정 read-only
+- [x] tariff 미연결 상태에서는 가짜 요금을 표시하지 않고 명시적으로 미연결 상태를 표시
+- [x] deterministic Playwright API/GIS mock으로 auth/owner/viewer/첫 meter/API 실패/빠른 입력/월말 설정/320px/keyboard 회귀 보호
 - [x] `.dev.vars` / `.env` 계열 Secret 파일 Git 제외
-- [x] build + persistence + local D1/workerd + Worker/auth/resource API + domain + Playwright GitHub Actions verify
+- [x] build + persistence + local D1/workerd + Worker/auth/resource API + domain + Playwright GitHub Actions verify 경로 유지
 
-UI는 아직 `src/demo.ts`의 고정 SAMPLE / DEMO DATA를 사용하며 실제 auth/API/D1/domain 결과와 연결하지 않습니다. 실제 Cloudflare remote D1 database/binding, Google Client ID/SESSION_SECRET 설정, 실제 Google Provider 로그인도 아직 없습니다.
+현재 UI는 실제 repository API/domain 계약을 사용합니다. 다만 실제 Cloudflare remote D1 database/binding, Google Client ID/SESSION_SECRET 환경값과 실제 Google Provider 로그인은 아직 구성하지 않았으므로 repository test에서는 deterministic mock과 local D1/workerd만 사용합니다.
 
-## 완료 WorkUnit: server-side ownership/authorization + meter/readings CRUD
+## 완료 WorkUnit: 모바일 UI와 auth/API/domain 연결 baseline
 
-현재 baseline:
+현재 계약:
 
-1. `/api/meters*` product route는 모두 유효한 `__Host-em_session`을 먼저 검증하고 해당 내부 user가 D1에 존재해야 실행한다.
-2. `GET /api/meters`는 로그인 user가 owner인 meter와 명시적으로 공유받은 viewer meter만 반환하고 각 항목에 `owner / viewer` 역할을 표시한다.
-3. `GET /api/meters/:meterId`와 reading 조회는 owner/viewer 모두 허용한다. 공유받지 않은 user와 존재하지 않는 meter는 동일한 404 응답으로 처리해 resource 존재 여부를 노출하지 않는다.
-4. viewer가 이미 접근 가능한 meter에 mutation을 시도하면 403으로 거부한다. owner만 meter 설정 변경·삭제와 reading 생성·수정·삭제가 가능하다.
-5. meter 생성 시 `owner_user_id`와 meter UUID는 서버가 session/random UUID에서 결정한다. body는 `name`, `timezone`, `billingClose`만 허용하므로 client-side owner ID 변조를 받지 않는다.
-6. meter 설정은 IANA timezone과 기존 `BillingCloseSetting` 의미를 재사용한다. `day`는 1~31, `month-end`는 별도 설정이며 실제 달에 날짜가 없으면 기존 domain이 월말로 자동 보정한다.
-7. reading mutation body는 `measuredAtMs`와 decimal `cumulativeKwh`만 허용한다. 기존 usage domain으로 정확한 integer Wh로 변환하고 ECMAScript Date 범위의 epoch millisecond instant를 검증한다.
-8. reading 생성/수정은 같은 meter의 exact instant 중복을 409로 거부하고 직전/다음 reading과 `calculateUsageInterval` 계약을 적용해 누적값 역행을 거부한다. 동일 누적값은 기존 domain 계약대로 허용한다.
-9. `src/persistence/d1.ts`가 access lookup, meter/readings mutation, neighbor lookup SQL을 소유하며 모든 동적 값은 prepared binding으로 전달한다. 파생 사용량/forecast는 저장하지 않는다.
-10. meter 삭제는 기존 D1 FK cascade로 viewer grant와 raw readings를 정리한다. owner identity 자체는 삭제하지 않는다.
-11. Node Worker/resource test는 owner/viewer/outsider, owner ID body injection, 공유 해제, invalid timezone/검침 설정, reading duplicate/decrease/update/delete를 보호한다.
-12. Wrangler local runtime은 실제 D1/workerd에서 synthetic owner/viewer/outsider signed session으로 resource API를 왕복한다. 실제 사용자 데이터나 remote D1은 사용하지 않는다.
-13. 실제 Google credential, production secret, remote D1 binding, sharing invitation UI, production deploy는 추가하지 않았다.
+1. `src/api.ts`가 frontend same-origin HTTP 경계를 소유하고 `/api/auth/*`, `/api/meters*`만 호출합니다. SQL/D1 binding은 frontend로 새지 않습니다.
+2. `/api/auth/session`이 503이면 인증 환경 미설정, 401이면 Google 로그인 가능 상태, 정상 session이면 product UI로 진입합니다.
+3. Google GIS script는 Client ID가 서버 `/api/auth/config`에서 실제 제공되는 signed-out 상태에서만 로드합니다. frontend callback은 host-only `g_csrf_token` cookie/body를 맞춰 기존 서버 double-submit 검증을 그대로 통과해야 합니다.
+4. 로그인 사용자는 접근 가능한 owner/viewer meter만 선택합니다. owner는 기록·설정 mutation이 가능하고 viewer는 조회 전용입니다. 권한의 정본은 계속 서버/API입니다.
+5. meter가 없는 첫 사용자는 이름, IANA timezone, 검침 마감만 입력해 meter를 생성합니다. owner identity와 resource ID는 client body에서 받지 않습니다.
+6. owner 홈 빠른 입력은 현재 `Date.now()`와 decimal kWh를 reading API에 저장하고 성공 뒤 meter/readings를 다시 조회합니다. localStorage/offline write queue는 추가하지 않았습니다.
+7. 최신 구간, 최근 완전 일자 평균, 현재 검침주기, 마감 예상, 30일 환산, 이전 주기 비교, 일별 보간은 기존 순수 domain을 재사용합니다. 최신 raw reading이 오늘의 검침주기에 속하지 않으면 과거 cycle forecast를 현재 cycle 값처럼 표시하지 않습니다.
+8. 검침 마감 UI는 `1..31` 또는 별도 `월말`입니다. 29~31일 고정값이 없는 달에는 domain이 그 달 실제 마지막 날을 사용하고, `월말`은 매달 실제 마지막 날을 사용합니다.
+9. 전기요금은 아직 정책 모듈이 없으므로 실제/샘플 금액을 표시하지 않습니다.
+10. Playwright는 API와 GIS를 deterministic하게 mock해 auth 미설정/signed-out 로그인, owner quick write+reload, viewer read-only, 첫 meter 생성, API 실패, 월말 설정, 모바일 폭과 keyboard 흐름을 보호합니다.
+11. 실제 Provider credential, remote D1, production secret, 실사용자 데이터, sharing invitation, PWA/offline write, tariff는 이번 범위에 넣지 않았습니다.
 
-## 다음 1순위 WorkUnit: 모바일 UI와 auth/API/domain 연결 baseline
+## 다음 1순위: preview 환경의 실제 Cloudflare D1 + Google Provider 연결 및 실사용자 E2E
 
-현재 demo UI를 한 번에 전부 재설계하지 않고, 이미 존재하는 화면과 서버 계약을 실제 데이터 흐름에 연결합니다.
+repository 코드가 아니라 Cloudflare/Google 환경 상태와 credential이 실제 결과를 바꾸는 단계입니다.
 
 완료 조건:
 
-1. frontend API client는 `/api/auth/session`, `/api/meters`, 선택 meter의 `/readings`를 동일 origin으로 호출하고 SQL/DB 세부를 알지 않는다.
-2. 인증되지 않은 상태, 인증 환경 미설정, 로그인 완료 상태를 UI에서 구분한다. 실제 Google Provider button/credential flow는 Client ID가 실제 환경에 구성된 경우에만 활성화한다.
-3. 로그인 사용자는 owner/viewer meter 목록에서 현재 meter를 선택할 수 있고 viewer는 읽기 전용 UI로 표시한다.
-4. owner의 홈 빠른 입력은 현재 시각 + 누적 kWh를 기존 POST reading API에 저장하고 성공 후 최신 raw readings를 다시 읽는다.
-5. 화면 지표는 `src/demo.ts` 고정 숫자가 아니라 실제 raw readings + meter timezone/검침 설정을 기존 usage/daily/billing/forecast domain에 넣어 계산한다.
-6. `1~31일 + 월말` meter 설정 UI는 owner에게만 활성화하고 저장 후 API의 canonical 설정을 다시 표시한다.
-7. API error/loading/empty state를 모바일에서 명확히 표시하되 임의 localStorage/오프라인 write queue를 추가하지 않는다.
-8. UI 테스트는 인증/owner/viewer/API 실패를 deterministic mock으로 보호하고 기존 iPhone Chromium/WebKit·desktop smoke를 유지한다.
-9. 실제 remote D1 생성, Google Client ID/SESSION_SECRET 발급·등록, production deploy가 필요해지는 지점은 repository 코드와 분리해 사용자 권한/credential 단계로 넘긴다.
+1. 현재 Cloudflare 공식 방식과 무료 한도를 다시 확인한 뒤 preview 전용 D1 resource/binding을 연결합니다.
+2. Google OAuth/GIS Client ID를 현재 preview origin에 맞게 설정하고 `GOOGLE_CLIENT_ID`, 강한 `SESSION_SECRET`, TTL을 repository 밖 환경값으로 주입합니다.
+3. 실제 Google 로그인 → first user 생성 → first meter 생성 → reading 저장 → 새로고침 후 동일 raw reading/계산 복원까지 preview에서 검증합니다.
+4. 두 번째 테스트 사용자가 없다면 sharing 권한 검증을 억지로 포함하지 않습니다. 별도 사용자로 검증할 수 있을 때 owner/viewer 격리를 확인합니다.
+5. Secret, cookie, 실제 user row/reading을 commit/log에 노출하지 않습니다.
+6. preview 검증이 끝나도 `main`, VERSION, tag, Release, production deploy는 사용자 승인 없이 변경하지 않습니다.
 
 ## 그 이후 후보
 
-- 실제 Cloudflare D1 resource/binding + Google Provider preview 환경 연결 및 실사용자 E2E
-- PWA installability; offline write/background sync는 별도 필요 확인 전 보류
-- version/effective date를 갖는 독립 전기요금 policy
+- PWA installability; offline write/background sync는 실제 필요 확인 전 보류
+- version/effective date와 공식 출처 provenance를 갖는 독립 전기요금 policy
 - 실제 owner/viewer 공유 초대/해제 UI와 관리 API
 
 VERSION/tag/release/main 통합/정식 production 배포는 사용자 승인 없이 진행하지 않습니다.
