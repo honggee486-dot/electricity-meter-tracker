@@ -1,6 +1,6 @@
 # NEXT_WORK.md
 
-## 현재 완료: architecture / domain / Worker+D1 / Google session / authorized CRUD / live mobile UI baseline / canonical remote D1 provisioning / PWA installability shell
+## 현재 완료: architecture / domain / Worker+D1 / Google session / authorized CRUD / live mobile UI baseline / canonical remote D1 provisioning / PWA installability shell / auth error boundary hardening
 
 - [x] Vite + TypeScript + 기본 DOM/CSS, 런타임 프레임워크 없음
 - [x] Workers Static Assets 개발 preview 및 `work/*` 자동 preview 경로
@@ -16,6 +16,7 @@
 - [x] frontend same-origin API client가 auth/session, meters, readings만 알고 SQL/D1 세부를 알지 않음
 - [x] UI가 인증 미설정 / signed-out / signed-in / loading / API error를 구분
 - [x] Google GIS callback credential을 기존 CSRF-protected `/api/auth/google`에 전달하고 정상 session을 다시 확인하는 frontend flow
+- [x] Google credential 검증 실패의 상세 진단은 server log에만 남기고 public API/UI에는 일반화된 오류만 노출
 - [x] 첫 로그인 사용자의 첫 meter 생성, owner/viewer meter 선택, viewer read-only UI
 - [x] owner 홈 빠른 입력이 현재 시각 + 누적 kWh를 POST하고 성공 후 raw readings를 다시 조회
 - [x] 화면 usage/daily/billing/forecast가 `src/demo.ts` 고정 숫자가 아니라 실제 raw readings + meter 설정으로 계산
@@ -29,7 +30,7 @@
 - [x] dev origin 실제 Google 로그인 → first user 자동 생성 → first meter 생성 → 실제 reading 저장 → reload 복원 E2E 검증 완료
 - [x] live app metadata + Web App Manifest + 192/512/maskable/apple-touch first-party PNG로 PWA installability repository contract 구성
 
-현재 UI는 실제 repository API/domain 계약을 사용하며, canonical Cloudflare remote D1 및 Google Web Client / Cloudflare auth runtime이 연결되어 dev preview(`https://dev-electricity-meter-tracker.247dev.workers.dev`)에서 실제 로그인과 데이터 복원이 검증되었습니다. PWA는 설치 가능한 app shell 계약까지만 포함하며 service worker, offline cache, offline write queue, Background Sync는 아직 추가하지 않습니다. repository 자동화 테스트에서는 deterministic mock과 local D1/workerd를 사용합니다.
+현재 UI는 실제 repository API/domain 계약을 사용하며, canonical Cloudflare remote D1 및 Google Web Client / Cloudflare auth runtime이 연결되어 dev preview(`https://dev-electricity-meter-tracker.247dev.workers.dev`)에서 실제 로그인과 데이터 복원이 검증되었습니다. Google credential 검증 실패는 public 응답과 UI에 verifier/provider detail을 노출하지 않고 server diagnostic에만 남깁니다. PWA는 설치 가능한 app shell 계약까지만 포함하며 service worker, offline cache, offline write queue, Background Sync는 아직 추가하지 않습니다. repository 자동화 테스트에서는 deterministic mock과 local D1/workerd를 사용합니다.
 
 ## 완료 WorkUnit: 모바일 UI와 auth/API/domain 연결 baseline
 
@@ -44,7 +45,7 @@
 7. 최신 구간, 최근 완전 일자 평균, 현재 검침주기 평균, 마감 예상, 30일 환산, 이전 주기 비교, 일별 보간은 기존 순수 domain을 재사용합니다. 최신 raw reading이 오늘의 검침주기에 속하지 않으면 과거 cycle forecast를 현재 cycle 값처럼 표시하지 않습니다.
 8. 검침 마감 UI는 `1..31` 또는 별도 `월말`입니다. 29~31일 고정값이 없는 달에는 domain이 그 달 실제 마지막 날을 사용하고, `월말`은 매달 실제 마지막 날을 사용합니다.
 9. 전기요금은 아직 정책 모듈이 없으므로 실제/샘플 금액을 표시하지 않습니다.
-10. Playwright는 API와 GIS를 deterministic하게 mock해 auth 미설정/signed-out 로그인, owner quick write+reload, viewer read-only, 첫 meter 생성, API 실패, 월말 설정, 모바일 폭과 keyboard 흐름을 보호합니다.
+10. Playwright는 API와 GIS를 deterministic하게 mock해 auth 미설정/signed-out 로그인, Google credential 실패 detail 비노출, owner quick write+reload, viewer read-only, 첫 meter 생성, API 실패, 월말 설정, 모바일 폭과 keyboard 흐름을 보호합니다.
 11. 실제 Provider credential, production secret, 실사용자 데이터, sharing invitation, offline write/background sync, tariff는 이 baseline에 포함하지 않았습니다.
 
 ## 확정 운영 방향: 처음 만든 remote resource를 최종본까지 사용
@@ -96,9 +97,17 @@
 
 자세한 범위와 검증 경계는 `docs/PWA_INSTALLABILITY.md`를 따릅니다.
 
+## 완료 WorkUnit: Google auth error boundary hardening
+
+- `/api/auth/google`은 verifier/provider 예외의 상세 message를 public JSON에 포함하지 않고 기존 `401 / INVALID_GOOGLE_CREDENTIAL`과 고정 일반 메시지만 반환합니다.
+- server diagnostic은 verifier 오류 이름/message를 유지하되 실제 Google credential 문자열이 포함되면 `[credential redacted]`로 치환하고 진단 길이를 제한합니다.
+- Worker dependency에 테스트 전용 log sink 주입점을 두어 public response와 server diagnostic의 분리를 결정적으로 검증합니다.
+- frontend는 `INVALID_GOOGLE_CREDENTIAL`에 대해 server-provided message를 재사용하지 않고 고정된 사용자용 안내만 표시합니다.
+- Worker 테스트는 provider detail이 server diagnostic에는 남고 credential/public response에는 남지 않는 계약을 검증합니다.
+- Playwright는 서버가 상세 message를 반환하는 보수적 mock에서도 해당 detail이 UI에 노출되지 않는 방어 경계를 검증합니다.
+
 ## 다음 1순위 후보
 
-- Google credential 검증 실패의 상세 runtime 진단은 server log에만 남기고 public API/UI에는 일반화된 오류만 노출하도록 auth error boundary hardening
 - version/effective date와 공식 출처 provenance를 갖는 독립 전기요금 policy
 - 실제 owner/viewer 공유 초대/해제 UI와 관리 API
 

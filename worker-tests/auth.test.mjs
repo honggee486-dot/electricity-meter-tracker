@@ -228,6 +228,36 @@ test('Google login requires the GIS double-submit CSRF token', async () => {
   assert.equal(db.users.length, 0);
 });
 
+test('Google credential verification details stay in server diagnostics and the credential is redacted', async () => {
+  const db = new AuthDb();
+  const credential = 'credential-sensitive-sentinel';
+  const diagnosticDetail = 'provider-detail-sentinel';
+  const logs = [];
+  const response = await handleWorkerRequest(
+    formRequest({ credential, g_csrf_token: 'csrf-1' }),
+    authEnv(db),
+    {
+      verifyGoogleCredential: async () => {
+        throw new Error(`${diagnosticDetail}: ${credential}`);
+      },
+      logError: (...values) => logs.push(values.map(String).join(' ')),
+    },
+  );
+
+  assert.equal(response.status, 401);
+  assert.deepEqual(await response.json(), {
+    error: {
+      code: 'INVALID_GOOGLE_CREDENTIAL',
+      message: 'Google credential could not be verified.',
+    },
+  });
+  const joinedLogs = logs.join('\n');
+  assert.match(joinedLogs, new RegExp(diagnosticDetail));
+  assert.match(joinedLogs, /\[credential redacted\]/);
+  assert.equal(joinedLogs.includes(credential), false);
+  assert.equal(db.users.length, 0);
+});
+
 test('first Google login creates one internal user and returning login reuses it', async () => {
   const db = new AuthDb();
   const dependencies = {

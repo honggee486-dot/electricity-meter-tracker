@@ -52,6 +52,7 @@ const JSON_HEADERS = {
   'content-type': 'application/json; charset=utf-8',
 } as const;
 const AUTH_FORM_LIMIT_BYTES = 20 * 1024;
+const AUTH_DIAGNOSTIC_LIMIT_CHARS = 1000;
 const API_JSON_LIMIT_BYTES = 16 * 1024;
 const RESOURCE_ID_PATTERN = /^[A-Za-z0-9._~-]{1,128}$/;
 
@@ -74,6 +75,7 @@ interface WorkerDependencies {
   verifyGoogleCredential?: (credential: string, clientId: string) => Promise<GoogleIdentity>;
   nowMs?: () => number;
   randomUUID?: () => string;
+  logError?: (...values: unknown[]) => void;
 }
 
 interface AuthConfig {
@@ -173,6 +175,24 @@ function invalidRequest(message = 'Request body is invalid.'): Response {
 
 function readingConflict(): Response {
   return apiError(409, 'READING_CONFLICT', 'Reading conflicts with the meter reading sequence.');
+}
+
+function authVerificationDiagnostic(error: unknown, credential: string): string {
+  let detail: string;
+  if (error instanceof Error) {
+    detail = `${error.name}: ${error.message}`;
+  } else {
+    try {
+      detail = `Non-Error rejection: ${String(error)}`;
+    } catch {
+      detail = 'Non-Error rejection.';
+    }
+  }
+
+  const redacted = detail.split(credential).join('[credential redacted]');
+  return redacted.length > AUTH_DIAGNOSTIC_LIMIT_CHARS
+    ? `${redacted.slice(0, AUTH_DIAGNOSTIC_LIMIT_CHARS)}…`
+    : redacted;
 }
 
 function singleFormValue(form: URLSearchParams, name: string): string | null {
@@ -420,9 +440,9 @@ async function handleGoogleLogin(
   try {
     identity = await verifyCredential(credential, config.googleClientId);
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Google credential could not be verified.';
-    console.error('Google credential verification failed:', message);
-    return apiError(401, 'INVALID_GOOGLE_CREDENTIAL', `Google credential could not be verified: ${message}`);
+    const logError = dependencies.logError ?? ((...values: unknown[]) => console.error(...values));
+    logError('Google credential verification failed:', authVerificationDiagnostic(error, credential));
+    return apiError(401, 'INVALID_GOOGLE_CREDENTIAL', 'Google credential could not be verified.');
   }
 
   const nowMs = (dependencies.nowMs ?? Date.now)();

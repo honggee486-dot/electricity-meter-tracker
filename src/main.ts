@@ -85,7 +85,7 @@ const friendlyError = (error: unknown): string => {
     if (error.status === 403) return '이 작업은 계량기 소유자만 할 수 있습니다.';
     if (error.status === 401) {
       if (error.code === 'INVALID_GOOGLE_CREDENTIAL') {
-        return `Google 로그인 검증 실패: ${error.message}`;
+        return 'Google 로그인 정보를 확인하지 못했습니다. 다시 시도해 주세요.';
       }
       return '로그인이 만료되었습니다. 다시 로그인해 주세요.';
     }

@@ -34,6 +34,7 @@ async function installApiMock(page, options = {}) {
     authenticated: options.auth !== 'signed-out',
     unconfigured: options.auth === 'unconfigured',
     failMeters: options.failMeters === true,
+    loginErrorDetail: options.loginErrorDetail ?? null,
     meters: structuredClone(options.meters ?? [ownerMeter]),
     readings: structuredClone(options.readings ?? baseReadings),
     lastReadingPost: null,
@@ -69,6 +70,11 @@ async function installApiMock(page, options = {}) {
       const form = new URLSearchParams(request.postData() ?? '');
       control.loginCredential = form.get('credential');
       control.loginCsrfToken = form.get('g_csrf_token');
+      if (control.loginErrorDetail) {
+        return json(401, {
+          error: { code: 'INVALID_GOOGLE_CREDENTIAL', message: control.loginErrorDetail },
+        });
+      }
       control.authenticated = true;
       return json(200, { authenticated: true, userId: 'owner-1' });
     }
@@ -142,6 +148,16 @@ test('auth configuration states stay distinct and Google callback completes the 
   expect(signedOut.loginCsrfToken.length).toBeGreaterThan(0);
   expect(decodeURIComponent(browserCsrfBeforeLogin)).toBe(signedOut.loginCsrfToken);
   expect(await csrfCookieValue(page)).toBe('');
+});
+
+test('Google login failure UI does not expose server-side credential diagnostics', async ({ page }) => {
+  const diagnosticDetail = 'provider-detail-must-not-reach-ui';
+  await installApiMock(page, { auth: 'signed-out', loginErrorDetail: diagnosticDetail });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Google 테스트 로그인' }).click();
+  await expect(page.getByRole('status')).toHaveText('Google 로그인 정보를 확인하지 못했습니다. 다시 시도해 주세요.');
+  await expect(page.getByText(diagnosticDetail)).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'Google로 로그인' })).toBeVisible();
 });
 
 test('owner quick entry persists through API, reloads raw readings, and recalculates live metrics', async ({ page }) => {
