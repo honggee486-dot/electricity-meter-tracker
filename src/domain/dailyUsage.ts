@@ -1,5 +1,9 @@
 import {
-  UsageDomainError,
+  createLocalDateFormatter,
+  findFirstLocalDateBoundary,
+  getLocalDate,
+} from './calendar.js';
+import {
   calculateUsageInterval,
   type MeterReadingPoint,
 } from './usage.js';
@@ -112,58 +116,6 @@ export function splitUsageIntervalByLocalDate(
     totalUsageWh: interval.usageWh,
     totalElapsedMs: interval.elapsedMs,
   };
-}
-
-function createLocalDateFormatter(timeZone: string): Intl.DateTimeFormat {
-  try {
-    return new Intl.DateTimeFormat('en-US-u-ca-gregory-nu-latn', {
-      timeZone,
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-    });
-  } catch {
-    throw new UsageDomainError('INVALID_TIME_ZONE', `Invalid meter time zone: ${timeZone}`);
-  }
-}
-
-function getLocalDate(formatter: Intl.DateTimeFormat, measuredAtMs: number): string {
-  const parts = formatter.formatToParts(measuredAtMs);
-  let year = '';
-  let month = '';
-  let day = '';
-
-  for (const part of parts) {
-    if (part.type === 'year') year = part.value;
-    else if (part.type === 'month') month = part.value;
-    else if (part.type === 'day') day = part.value;
-  }
-
-  return `${year.padStart(4, '0')}-${month}-${day}`;
-}
-
-function findFirstLocalDateBoundary(
-  formatter: Intl.DateTimeFormat,
-  fromMs: number,
-  toMs: number,
-): number | null {
-  const fromDate = getLocalDate(formatter, fromMs);
-  if (getLocalDate(formatter, toMs) === fromDate) {
-    return null;
-  }
-
-  let low = fromMs;
-  let high = toMs;
-  while (low + 1 < high) {
-    const middle = low + Math.floor((high - low) / 2);
-    if (getLocalDate(formatter, middle) === fromDate) {
-      low = middle;
-    } else {
-      high = middle;
-    }
-  }
-
-  return high;
 }
 
 function interpolateUsageWh(totalUsageWh: number, totalElapsedMs: number, elapsedMs: number): number {

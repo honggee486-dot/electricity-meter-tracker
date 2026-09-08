@@ -10,7 +10,9 @@ export type UsageDomainErrorCode =
   | 'INVALID_READING_POINT'
   | 'READING_DECREASED'
   | 'NON_POSITIVE_INTERVAL'
-  | 'INVALID_TIME_ZONE';
+  | 'INVALID_TIME_ZONE'
+  | 'INVALID_BILLING_CLOSE_SETTING'
+  | 'UNRESOLVABLE_LOCAL_DATE';
 
 export class UsageDomainError extends Error {
   readonly code: UsageDomainErrorCode;
@@ -52,8 +54,6 @@ export function parseCumulativeKwhToWh(value: string): number {
     );
   }
 
-  // Number.MAX_SAFE_INTEGER Wh is the implementation safety ceiling, not a meter product limit.
-  // Reject clearly oversized strings before constructing a BigInt from unbounded input.
   const normalizedWholeKwh = wholeKwh.replace(/^0+(?=\d)/, '');
   if (normalizedWholeKwh.length > 13) {
     throw new UsageDomainError('READING_OUT_OF_RANGE', 'Cumulative reading is outside the safe integer Wh range.');

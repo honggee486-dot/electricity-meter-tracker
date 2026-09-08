@@ -1,6 +1,6 @@
 # NEXT_WORK.md
 
-## 현재 완료: architecture / mobile preview / 순수 구간 + 일자별 계산 baseline
+## 현재 완료: architecture / mobile preview / 순수 usage + calendar + 검침주기 baseline
 
 - [x] Vite + TypeScript + 기본 DOM/CSS 선택, 런타임 프레임워크 없음
 - [x] Workers Static Assets 개발 preview 및 `work/*` 자동 preview 경로 확인
@@ -10,54 +10,53 @@
 - [x] 누적 kWh 문자열 → 정확한 정수 Wh 변환 계약
 - [x] 절대 epoch-millisecond instant 기반 reading 계약
 - [x] 두 reading의 사용량, 경과시간, 평균 소비전력 순수 계산
-- [x] 감소 누적값, 동일값, 동일/역전 시각, 소수값에 대한 domain 자동 테스트
-- [x] 명시적 meter timezone 기준 같은 날/자정/여러 날의 일자별 사용량 분할
-- [x] 시간비례 선형 보간과 `actual / interpolated` provenance
-- [x] 월말/연말/윤년/DST 경계 및 총사용량 보존 invariant 자동 테스트
-- [x] UTC / Asia-Seoul process timezone에서 동일한 domain 계약 검증 경로
+- [x] 명시적 meter timezone 기준 일자별 사용량 분할과 선형 보간
+- [x] `actual / interpolated` provenance 및 총사용량 보존 invariant
+- [x] 검침 마감 설정 `1~31일` + 별도 `월말` 의미 계약
+- [x] 고정 일자가 없는 달은 해당 월 마지막 날로 자동 보정
+- [x] 이전/현재/다음 검침주기와 남은 기간 계산
+- [x] 검침 경계 actual 우선, 전후 reading 보간, 자료 부족 시 미산출 계약
+- [x] 월말/연말/윤년/DST 및 UTC / Asia-Seoul process timezone 자동 검증 경로
 - [x] build + domain + Playwright를 보호하는 GitHub Actions verify workflow
 
 UI는 아직 `src/demo.ts`의 고정 SAMPLE / DEMO DATA를 사용하며 실제 domain 결과와 연결하지 않습니다. API/DB/auth도 아직 없습니다.
 
-## 완료 WorkUnit: 순수 구간 + 날짜 경계 분할/보간
+## 완료 WorkUnit: 검침 마감 설정 + 검침주기 + 경계 보간
 
 현재 내부 baseline:
 
-1. 누적값은 부호 없는 decimal kWh 문자열을 최대 3자리 소수까지 받아 정수 Wh로 변환한다. 이 1 Wh 정밀도는 persistence/API가 생기기 전의 가역적인 내부 계약이며 실제 계량기 제품 범위를 의미하지 않는다.
-2. 측정 시각은 `measuredAtMs` Unix epoch milliseconds 절대 instant다.
-3. 같은 누적값의 후속 기록은 0 Wh 구간으로 허용한다.
-4. 감소 누적값은 meter reset/replacement로 임의 해석하지 않고 오류로 처리한다.
-5. 동일 또는 역전 measuredAt은 오류로 처리한다.
-6. 구간 결과는 exact `usageWh`, `usageKwh`, elapsed ms/hours, 평균 소비전력 W를 제공한다.
-7. `splitUsageIntervalByLocalDate`는 명시적 meter timezone의 local-date 경계를 찾아 한 구간을 일자별로 나눈다.
-8. 실제 endpoint는 `actual`, 실제 reading 사이 날짜 경계는 `interpolated`이며 정확히 경계에 실제 reading이 있으면 actual이 우선한다.
-9. 보간은 경과시간 비례 선형 보간이다. 보간 누적값은 fractional Wh가 될 수 있지만 원본 reading은 정수 Wh 계약을 유지한다.
-10. calendar 경계는 서버/process local timezone이나 고정 24시간 가정에 의존하지 않고 IANA timezone을 사용한다.
+1. 검침 마감 설정은 `{ kind: 'day', day: 1..31 }` 또는 `{ kind: 'month-end' }`로 의미를 분리한다.
+2. 고정 일자가 해당 월에 없으면 `min(설정 일자, 그 달 마지막 일자)`로 실제 마감일을 정한다. 예: 30일 설정의 평년 2월은 28일, 윤년 2월은 29일이다.
+3. `month-end`는 설정 숫자 31과 별개 의미이며 매월 실제 마지막 일자를 사용한다.
+4. 21일 마감의 계산 구간은 `전월 22일 00:00 <= t < 당월 22일 00:00`, 표시 기간은 `전월 22일 ~ 당월 21일`이다.
+5. 현재 instant에서 이전/현재/다음 검침주기와 현재 주기 남은 시간을 meter timezone 기준으로 계산한다.
+6. 검침 경계에 실제 reading이 있으면 `actual`을 사용하고, 없으면 가장 가까운 전후 actual reading으로 선형 보간해 `interpolated`를 만든다.
+7. 경계를 감싸는 reading이 부족하면 값을 임의 추정하지 않고 `null`로 남긴다.
+8. 나중에 정확한 경계 actual reading이 들어오면 같은 계산 호출에서 보간값보다 actual이 자동 우선한다.
+9. calendar 계산은 공용 `src/domain/calendar.ts`가 IANA timezone/local-date 변환을 소유하며 고정 24시간을 가정하지 않는다.
 
-## 다음 1순위 WorkUnit: 검침주기 + 검침 경계 보간
+## 다음 1순위 WorkUnit: 최근 일평균 / 주기 평균 / 마감 예상 / 30일 환산 + 신뢰도
 
-21일 마감처럼 meter별 검침 마감일을 calendar domain에 추가하고 실제 경계 reading → 전후 reading 보간 순서를 구현합니다.
+현재 순수 usage/calendar/billing-cycle domain 위에 예측을 추가합니다.
 
-**Discussion Gate:** 마감일을 29~31일로 설정했는데 해당 날짜가 없는 달의 정책은 제품 의미를 바꾸므로 구현 전에 사용자 결정을 받습니다.
+완료 조건:
 
-정책 결정 후 완료 조건:
-
-1. `21일 마감 → 전월 22일 00:00 ~ 당월 22일 00:00`의 half-open 계산 경계를 사용해 표시 기간 `전월 22일 ~ 당월 21일`과 일치시킨다.
-2. 이전/현재/다음 검침주기와 현재 시점의 남은 기간을 meter timezone 기준으로 계산한다.
-3. 검침 경계에 actual reading이 있으면 actual을 사용한다.
-4. actual이 없고 경계 전후 reading이 충분하면 선형 보간하고 `interpolated` provenance를 유지한다.
-5. 실제 마감 reading이 나중에 들어오면 추정/보간 경계보다 우선할 수 있는 순수 domain 계약을 만든다.
-6. 월말/연말/윤년과 결정된 29~31일 정책을 자동 테스트한다.
+1. 최근 측정 구간 소비 속도, 최근 일평균, 현재 검침주기 평균을 서로 다른 값으로 유지한다.
+2. 현재 검침주기 실제/보간 누적 사용량과 남은 기간을 이용해 마감일까지 예상 사용량을 계산한다.
+3. 비교용 30일 환산량을 마감 예상량과 별도 필드로 제공한다.
+4. 데이터가 짧거나 경계값을 만들 수 없을 때 과도한 예측을 하지 않고 신뢰도/자료 부족 상태를 명시한다.
+5. 이전 검침주기 비교에 필요한 최소 순수 계산 계약을 만든다.
+6. 테스트에서 검침기간 첫날/마지막 날, 짧은 측정 구간, 최근 사용 급변, 자료 부족을 보호한다.
 7. UI/API/D1/요금 계산으로 범위를 넓히지 않는다.
 
 ## 그 이후 후보
 
-- 최근 일평균 / 주기 평균 / 마감 예측 / 30일 환산 및 신뢰도
 - Worker runtime + API shell
 - users / meters / readings / meter_members D1 schema와 migration
 - Google 로그인, 내부 user identity, session
 - server-side ownership/authorization + meter/readings CRUD
 - 실제 모바일 UI와 API/domain 연결
+- 검침 마감 설정 UI: 1~31일 + 월말 선택
 - PWA installability; offline write/background sync는 별도 필요 확인 전 보류
 - version/effective date를 갖는 독립 전기요금 policy
 - 실제 owner/viewer 공유
