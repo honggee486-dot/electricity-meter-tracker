@@ -58,6 +58,18 @@ test('local persistence check is not a product API route without the explicit lo
   });
 });
 
+test('local auth check is not a product API route without the explicit local gate', async () => {
+  const response = await handleWorkerRequest(request('/api/_dev/auth-check'), {});
+
+  assert.equal(response.status, 404);
+  assert.deepEqual(await response.json(), {
+    error: {
+      code: 'NOT_FOUND',
+      message: 'API route not found.',
+    },
+  });
+});
+
 test('non-API misses do not masquerade as API responses', async () => {
   const response = handleRequest(request('/missing'));
 
