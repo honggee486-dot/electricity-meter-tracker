@@ -12,7 +12,7 @@
 - 홈 / 기록 / 분석 / 설정 하단 탐색, 읽기 전용 계량기 설정, 준비 중인 공유 UI.
 - 구간 사용량·소비전력, 최근 일평균, 검침주기 평균, 마감 예상, 비교용 30일 환산을 분리해 표시합니다. 입력해도 이 지표는 바뀌지 않습니다.
 - 일별 경계 측정 / 추정·보간의 구분은 표현 예시입니다. 보간 엔진과 실제 한전 요금표는 없으며 **예상 전기요금도 고정 샘플**입니다.
-- 개발용 정적 preview를 위해 `wrangler.jsonc`에 `./dist` Static Assets 배포 설정을 추가했고 Cloudflare Workers Builds Git 연동을 구성했습니다. `main`은 production 기준으로 유지하고 `work/*`는 non-production preview에 사용합니다. 첫 work branch preview 배포 성공 여부는 아직 확인 전입니다.
+- 개발용 정적 preview를 위해 `wrangler.jsonc`에 `./dist` Static Assets 배포 설정을 추가했고 Cloudflare Workers Builds Git 연동을 구성했습니다. `main`은 production 기준으로 유지하고 `work/*`는 non-production preview에 사용합니다. `work/0.1.0` preview 배포를 실제 확인했으며, Dashboard의 non-production deploy command는 `--preview-alias dev`를 사용해 `dev-electricity-meter-tracker.247dev.workers.dev` 고정 개발 URL을 최신 preview로 갱신하도록 구성합니다.
 
 ## 실행과 검증
 
@@ -74,7 +74,7 @@ Frontend / 향후 PWA
   → D1 (저장)
 ```
 
-Workers Static Assets를 우선 호스팅 후보로 정해 향후 정적 UI와 API를 같은 프로젝트에서 운영하도록 합니다. 현재 `wrangler.jsonc`에는 `./dist` 정적 assets와 workers.dev/preview URL 설정만 있으며 Worker 코드, Cloudflare Vite plugin, API binding은 없습니다. Cloudflare Workers Builds Git 연동은 Dashboard에서 구성했으며 정식 production 배포는 아직 하지 않았습니다. [Static Assets 공식 문서](https://developers.cloudflare.com/workers/static-assets/)를 확인했습니다.
+Workers Static Assets를 우선 호스팅 후보로 정해 향후 정적 UI와 API를 같은 프로젝트에서 운영하도록 합니다. 현재 `wrangler.jsonc`에는 `./dist` 정적 assets와 workers.dev/preview URL 설정만 있으며 Worker 코드, Cloudflare Vite plugin, API binding은 없습니다. Cloudflare Workers Builds Git 연동은 Dashboard에서 구성했고 non-production preview 배포 성공을 확인했습니다. 정식 production 배포는 아직 하지 않았습니다. [Static Assets 공식 문서](https://developers.cloudflare.com/workers/static-assets/)를 확인했습니다.
 
 운영비 0원 우선으로 Workers Free 및 D1 무료 할당량 내 운영을 목표로 합니다. 현재 무료 정적 요청과 별도로 Worker API 및 D1에는 사용 제한이 있으므로 무조건 무료 운영을 보장하지 않습니다. 실제 도입 시 [Workers 가격](https://developers.cloudflare.com/workers/platform/pricing/)과 [D1 가격/제한](https://developers.cloudflare.com/d1/platform/pricing/)을 재확인합니다. 현재는 운영 리소스를 만들지 않았습니다.
 
