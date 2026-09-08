@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import worker, { handleRequest } from '../.worker-test/worker.js';
+import worker, { handleRequest, handleWorkerRequest } from '../.worker-test/worker.js';
 
 const request = (path, init) => new Request(`https://example.test${path}`, init);
 
@@ -15,7 +15,7 @@ test('GET /api/health returns deterministic no-store JSON', async () => {
 });
 
 test('default Worker fetch uses the same request owner', async () => {
-  const response = worker.fetch(request('/api/health'));
+  const response = await worker.fetch(request('/api/health'), {});
 
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { ok: true });
@@ -36,6 +36,18 @@ test('unsupported health methods fail deterministically with Allow', async () =>
 
 test('unknown API routes return the API error envelope', async () => {
   const response = handleRequest(request('/api/missing'));
+
+  assert.equal(response.status, 404);
+  assert.deepEqual(await response.json(), {
+    error: {
+      code: 'NOT_FOUND',
+      message: 'API route not found.',
+    },
+  });
+});
+
+test('local persistence check is not a product API route without the explicit local gate', async () => {
+  const response = await handleWorkerRequest(request('/api/_dev/persistence-check'), {});
 
   assert.equal(response.status, 404);
   assert.deepEqual(await response.json(), {

@@ -33,6 +33,11 @@ class PersistenceSchemaTests(unittest.TestCase):
             (meter_id, owner_id, "Home", "Asia/Seoul", kind, day, 1, 1),
         )
 
+    def query_plan(self, sql, params):
+        return "\n".join(
+            row[3] for row in self.db.execute(f"EXPLAIN QUERY PLAN {sql}", params)
+        )
+
     def test_expected_tables_and_cost_indexes_exist(self):
         tables = {
             row[0]
@@ -185,6 +190,33 @@ class PersistenceSchemaTests(unittest.TestCase):
             self.db.execute("SELECT COUNT(*) FROM users").fetchone()[0],
             2,
         )
+
+    def test_declared_indexes_cover_persistence_read_paths(self):
+        plans = {
+            "identity": self.query_plan(
+                "SELECT user_id, google_subject, created_at_ms FROM users "
+                "WHERE google_subject = ?1 LIMIT 1",
+                ("subject",),
+            ),
+            "owner": self.query_plan(
+                "SELECT meter_id FROM meters WHERE owner_user_id = ?1 ORDER BY meter_id",
+                ("owner",),
+            ),
+            "viewer": self.query_plan(
+                "SELECT meter_id FROM meter_members WHERE user_id = ?1 ORDER BY meter_id",
+                ("viewer",),
+            ),
+            "readings": self.query_plan(
+                "SELECT reading_id, measured_at_ms FROM readings "
+                "WHERE meter_id = ?1 ORDER BY measured_at_ms",
+                ("meter",),
+            ),
+        }
+
+        self.assertIn("ux_users_google_subject", plans["identity"])
+        self.assertIn("idx_meters_owner_user", plans["owner"])
+        self.assertIn("idx_meter_members_user", plans["viewer"])
+        self.assertIn("ux_readings_meter_measured_at", plans["readings"])
 
 
 if __name__ == "__main__":

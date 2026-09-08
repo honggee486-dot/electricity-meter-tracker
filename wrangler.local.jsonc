@@ -1,0 +1,17 @@
+{
+  "name": "electricity-meter-tracker-local",
+  "compatibility_date": "2026-09-08",
+  "main": "./src/worker.ts",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "electricity-meter-tracker-local",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "preview_database_id": "local-electricity-meter-tracker",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "vars": {
+    "LOCAL_PERSISTENCE_CHECK": "1"
+  }
+}

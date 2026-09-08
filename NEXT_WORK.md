@@ -1,6 +1,6 @@
 # NEXT_WORK.md
 
-## 현재 완료: architecture / mobile preview / 순수 domain + Worker API shell + D1 schema baseline
+## 현재 완료: architecture / mobile preview / 순수 domain + Worker API shell + D1 schema + persistence query owner baseline
 
 - [x] Vite + TypeScript + 기본 DOM/CSS 선택, 런타임 프레임워크 없음
 - [x] Workers Static Assets 개발 preview 및 `work/*` 자동 preview 경로 확인
@@ -31,41 +31,44 @@
 - [x] reading 원본 `meter / measured_at_ms / cumulative_wh` 보존 및 동일 meter·동일 instant 중복 차단
 - [x] owner는 `meters.owner_user_id`, 공유 viewer는 `meter_members`로 단순 분리
 - [x] 주요 owner/member/reading 조회용 최소 index와 foreign key/cascade 계약
-- [x] SQLite in-memory migration contract test를 CI에 추가
+- [x] `src/persistence/d1.ts` D1-compatible persistence read owner
+- [x] Google subject / owner meter / viewer meter / ordered reading parameterized lookup
+- [x] DB row → persistence/domain 입력 경계 검증과 malformed row explicit failure
+- [x] `EXPLAIN QUERY PLAN`으로 4개 read path의 기존 index 사용 회귀 보호
+- [x] local-only Wrangler D1 config + synthetic fixture + gated Worker probe
 - [x] build + persistence + Worker API + domain + Playwright를 보호하는 GitHub Actions verify workflow
 
-UI는 아직 `src/demo.ts`의 고정 SAMPLE / DEMO DATA를 사용하며 실제 domain/API/D1 결과와 연결하지 않습니다. 실제 D1 binding/database, auth, CRUD도 아직 없습니다.
+UI는 아직 `src/demo.ts`의 고정 SAMPLE / DEMO DATA를 사용하며 실제 domain/API/D1 결과와 연결하지 않습니다. 실제 remote D1 database/binding, auth, mutation CRUD도 아직 없습니다.
 
-## 완료 WorkUnit: D1 persistence schema + migration baseline
+## 완료 WorkUnit: D1 persistence query owner implementation
 
 현재 baseline:
 
-1. `migrations/0001_initial.sql`이 현재 persistence schema의 단일 초기 migration이다.
-2. `users.user_id`는 내부 식별자이고 `google_subject`는 별도 unique provider identity다. 이메일은 identity key로 저장하지 않는다.
-3. `meters.owner_user_id`가 정확한 owner의 canonical source다. owner 삭제는 참조 meter가 남아 있는 동안 foreign key로 차단한다.
-4. `meter_members`는 명시적으로 공유한 viewer grant만 보존한다. 같은 meter/user 중복 grant는 primary key로 차단한다.
-5. meter는 `name`, IANA timezone 문자열, `billing_close_kind`, `billing_close_day`를 저장한다. `day`는 1~31이 필수이고 `month-end`는 day가 `NULL`이어야 한다.
-6. `readings`는 `reading_id`, `meter_id`, `measured_at_ms`, `cumulative_wh`, `created_at_ms`만 저장한다. 일별 사용량·보간값·forecast·요금 같은 파생값은 저장하지 않는다.
-7. 같은 meter의 정확히 같은 measured instant는 unique index로 차단하지만 같은 누적값을 더 늦은 시각에 다시 기록하는 것은 허용한다. 누적값 역행 검사는 현재 domain/API owner가 담당한다.
-8. meter 삭제는 해당 viewer grant와 reading을 cascade 삭제하지만 user 자체는 삭제하지 않는다.
-9. owner별 meter, user별 shared meter, meter별 측정시각 조회를 위한 최소 index만 둬 read amplification을 줄이고 불필요한 index write는 피한다.
-10. `persistence-tests/schema_test.py`는 Python 표준 `sqlite3` in-memory DB에 migration을 적용해 table/index/FK/uniqueness/check/cascade 계약을 검증한다. 앱 runtime에는 Python dependency가 없다.
-11. 2026-09-08 Cloudflare 공식 문서 기준 D1 Workers Free는 5,000,000 rows read/day, 100,000 rows written/day, 계정 총 5 GB, database당 500 MB, account당 10 databases이며 Free 한도 초과 시 query가 실패하고 자동 유료 과금으로 전환되지 않는다.
-12. 실제 Cloudflare D1 database/binding은 아직 만들거나 연결하지 않았고 production data/migration은 변경하지 않았다.
+1. `src/persistence/d1.ts`가 현재 D1 query owner이며 `src/domain/*`는 D1/SQL을 import하지 않는다.
+2. dynamic query 값은 prepared statement의 `?1` binding을 사용하고 SQL 문자열 결합으로 삽입하지 않는다.
+3. `findUserByGoogleSubject`는 unique Google subject → 내부 user row를 조회한다.
+4. `listOwnedMeters`, `listViewerMeterIds`, `listMeterReadings`는 기존 owner/member/reading index와 같은 access path를 사용하고 deterministic ordering을 갖는다.
+5. DB row의 문자열/safe integer/검침 마감 의미를 호출자에게 넘기기 전에 검증하고 손상 row는 `PersistenceDataError`로 실패한다.
+6. `persistence-tests/schema_test.py`는 schema integrity뿐 아니라 identity/owner/viewer/reading query가 선언된 index를 사용하는지 `EXPLAIN QUERY PLAN`으로 확인한다.
+7. `worker-tests/persistence.test.mjs`는 parameter binding, row mapping, ordering, malformed row failure를 가짜 D1 binding으로 검증한다.
+8. `wrangler.local.jsonc`는 root deploy config와 분리된 local D1/workerd 전용 설정이며 synthetic ID만 사용한다.
+9. `persistence-tests/local_fixture.sql`은 local probe 전용 synthetic owner/viewer/meter/readings fixture다.
+10. `/api/_dev/persistence-check`는 `LOCAL_PERSISTENCE_CHECK=1`과 DB binding이 동시에 있을 때만 동작한다. root production/preview config에서는 일반 404 API route로 남는다.
+11. 실제 Cloudflare D1 database 생성, production/preview binding, 실제 사용자 데이터, Google OAuth/session, mutation CRUD는 추가하지 않았다.
+12. Web-side TypeScript/Node/SQLite와 GitHub Actions 검증은 가능하지만 실제 `wrangler` local workerd + D1 binding round trip은 로컬 runtime evidence가 필요하다.
 
-## 다음 1순위 WorkUnit: D1 binding + 최소 persistence query owner
+## 다음 1순위 검증: local D1/workerd round trip
 
-현재 schema를 실제 Worker persistence 경계에 연결하되 Google auth와 전체 CRUD를 한 번에 묶지 않습니다.
+새 기능 설계가 아니라 위 구현의 실제 Cloudflare local runtime 호환성을 확인합니다.
 
 완료 조건:
 
-1. 구현 시점의 Cloudflare D1 binding/local-development 공식 문서와 현재 Free 한도/제약을 다시 확인한다.
-2. 실제 remote D1 resource 생성이나 production binding/deploy가 필요하면 사용자 승인 없이 실행하지 않는다. 먼저 local/preview 경로를 우선한다.
-3. `src/domain/*`는 D1/SQL을 import하지 않고 순수 owner를 유지한다.
-4. 최소 persistence module이 parameterized query와 row↔domain 입력 경계를 소유하도록 한다.
-5. owner meter lookup, viewer membership lookup, meter readings ordered lookup에 현재 index가 실제로 맞는지 query plan/통합 테스트로 확인한다.
-6. migration을 local D1-compatible runtime에서 적용하고 최소 read/write round trip을 검증한다.
-7. 실제 사용자 데이터, Google OAuth/session, authorization CRUD, UI 연결, tariff, production deploy로 범위를 넓히지 않는다.
+1. 최신 work HEAD에서 `AGENTS.md` Git 규칙을 지키고 Wrangler의 local mode만 사용한다.
+2. `wrangler.local.jsonc`로 local D1 migration을 적용한다. remote D1 명령이나 배포는 실행하지 않는다.
+3. `persistence-tests/local_fixture.sql`을 local D1에 적용해 write round trip을 만든다.
+4. local Worker를 실행하고 `GET /api/_dev/persistence-check`가 `ok: true`, owner/viewer meter와 `[1000, 2000]` ordered reading instant를 반환하는지 확인한다.
+5. root `wrangler.jsonc` product route에서는 local gate가 활성화되지 않는 계약을 유지한다.
+6. Windows/Node/Wrangler/runtime 결함이 확인될 때만 직접 관련 최소 수정 후 targeted/full 검증과 work branch non-force commit/push를 수행한다.
 
 ## 그 이후 후보
 
