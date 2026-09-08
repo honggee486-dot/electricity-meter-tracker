@@ -1,6 +1,6 @@
 # NEXT_WORK.md
 
-## 현재 완료: architecture / mobile preview / 순수 domain + Worker API shell + D1 schema + persistence query owner baseline
+## 현재 완료: architecture / mobile preview / 순수 domain + Worker API shell + D1 persistence/runtime baseline
 
 - [x] Vite + TypeScript + 기본 DOM/CSS 선택, 런타임 프레임워크 없음
 - [x] Workers Static Assets 개발 preview 및 `work/*` 자동 preview 경로 확인
@@ -36,11 +36,13 @@
 - [x] DB row → persistence/domain 입력 경계 검증과 malformed row explicit failure
 - [x] `EXPLAIN QUERY PLAN`으로 4개 read path의 기존 index 사용 회귀 보호
 - [x] local-only Wrangler D1 config + synthetic fixture + gated Worker probe
-- [x] build + persistence + Worker API + domain + Playwright를 보호하는 GitHub Actions verify workflow
+- [x] pinned Wrangler `4.129.0` + workerd + local D1 migration/fixture/HTTP round trip CI 검증
+- [x] root product Wrangler config에서 local probe가 계속 API 404인 isolation 검증
+- [x] build + persistence + local D1/workerd + Worker API + domain + Playwright를 보호하는 GitHub Actions verify workflow
 
 UI는 아직 `src/demo.ts`의 고정 SAMPLE / DEMO DATA를 사용하며 실제 domain/API/D1 결과와 연결하지 않습니다. 실제 remote D1 database/binding, auth, mutation CRUD도 아직 없습니다.
 
-## 완료 WorkUnit: D1 persistence query owner implementation
+## 완료 WorkUnit: D1 persistence query owner + local runtime verification
 
 현재 baseline:
 
@@ -49,30 +51,35 @@ UI는 아직 `src/demo.ts`의 고정 SAMPLE / DEMO DATA를 사용하며 실제 d
 3. `findUserByGoogleSubject`는 unique Google subject → 내부 user row를 조회한다.
 4. `listOwnedMeters`, `listViewerMeterIds`, `listMeterReadings`는 기존 owner/member/reading index와 같은 access path를 사용하고 deterministic ordering을 갖는다.
 5. DB row의 문자열/safe integer/검침 마감 의미를 호출자에게 넘기기 전에 검증하고 손상 row는 `PersistenceDataError`로 실패한다.
-6. `persistence-tests/schema_test.py`는 schema integrity뿐 아니라 identity/owner/viewer/reading query가 선언된 index를 사용하는지 `EXPLAIN QUERY PLAN`으로 확인한다.
+6. `persistence-tests/schema_test.py`는 schema integrity와 4개 persistence read path의 index 사용을 `EXPLAIN QUERY PLAN`으로 확인한다. `?1` plan 검증도 Python의 향후 named-binding 규칙에 맞는 mapping으로 실행한다.
 7. `worker-tests/persistence.test.mjs`는 parameter binding, row mapping, ordering, malformed row failure를 가짜 D1 binding으로 검증한다.
 8. `wrangler.local.jsonc`는 root deploy config와 분리된 local D1/workerd 전용 설정이며 synthetic ID만 사용한다.
 9. `persistence-tests/local_fixture.sql`은 local probe 전용 synthetic owner/viewer/meter/readings fixture다.
 10. `/api/_dev/persistence-check`는 `LOCAL_PERSISTENCE_CHECK=1`과 DB binding이 동시에 있을 때만 동작한다. root production/preview config에서는 일반 404 API route로 남는다.
-11. 실제 Cloudflare D1 database 생성, production/preview binding, 실제 사용자 데이터, Google OAuth/session, mutation CRUD는 추가하지 않았다.
-12. Web-side TypeScript/Node/SQLite와 GitHub Actions 검증은 가능하지만 실제 `wrangler` local workerd + D1 binding round trip은 로컬 runtime evidence가 필요하다.
+11. `persistence-tests/local_runtime_check.sh`는 Wrangler `4.129.0`을 고정해 migration → fixture write → workerd Worker → D1 prepared read → HTTP 응답을 동일 local persistence state에서 검증한다.
+12. GitHub Actions Linux runner에서 local probe가 `ok: true`, `local-owner`, owner/viewer의 `local-meter`, `[1000, 2000]` ordered reading instant를 반환하는 실제 Wrangler/workerd/D1 round trip을 확인한다.
+13. 같은 runtime harness가 root `wrangler.jsonc`로 별도 Worker를 실행해 `/api/_dev/persistence-check`가 `404 NOT_FOUND`로 유지되는 것도 확인한다.
+14. 실제 Cloudflare remote D1 database 생성, production/preview binding, 실제 사용자 데이터, Google OAuth/session, mutation CRUD는 추가하지 않았다.
+15. Windows-specific filesystem/process 동작은 현재 persistence call path의 필수 계약이 아니며, 별도 OS 고유 증상이 생기기 전에는 중복 runtime 검증을 요구하지 않는다.
 
-## 다음 1순위 검증: local D1/workerd round trip
+## 다음 1순위 WorkUnit: Google 로그인 + 내부 identity/session baseline
 
-새 기능 설계가 아니라 위 구현의 실제 Cloudflare local runtime 호환성을 확인합니다.
+현재 persistence와 Worker 경계 위에 Google 로그인만 추가하되 meter/readings authorization CRUD와 UI 전체 연결을 한 번에 묶지 않습니다.
 
 완료 조건:
 
-1. 최신 work HEAD에서 `AGENTS.md` Git 규칙을 지키고 Wrangler의 local mode만 사용한다.
-2. `wrangler.local.jsonc`로 local D1 migration을 적용한다. remote D1 명령이나 배포는 실행하지 않는다.
-3. `persistence-tests/local_fixture.sql`을 local D1에 적용해 write round trip을 만든다.
-4. local Worker를 실행하고 `GET /api/_dev/persistence-check`가 `ok: true`, owner/viewer meter와 `[1000, 2000]` ordered reading instant를 반환하는지 확인한다.
-5. root `wrangler.jsonc` product route에서는 local gate가 활성화되지 않는 계약을 유지한다.
-6. Windows/Node/Wrangler/runtime 결함이 확인될 때만 직접 관련 최소 수정 후 targeted/full 검증과 work branch non-force commit/push를 수행한다.
+1. 구현 시점의 Google OAuth/OIDC와 Cloudflare Workers 공식 지원 방식, 보안 요구, 무료 운영 가능성을 다시 확인한다.
+2. 자체 이메일/비밀번호 회원가입은 추가하지 않고 Google 로그인만 지원한다.
+3. 공급자의 안정적 subject identifier와 내부 `user_id`를 연결하며 email을 불변 identity key로 사용하지 않는다.
+4. 최초 정상 Google 로그인 시 필요한 내부 user row를 자동 생성할 수 있는 최소 persistence write 경계를 둔다.
+5. OAuth state/nonce/PKCE 또는 선택한 공식 flow가 요구하는 CSRF/replay 방어와 redirect 검증을 서버 경계에서 강제한다.
+6. session은 브라우저 JavaScript가 읽을 필요가 없는 secure cookie 기반을 우선 검토하고, signing/encryption secret과 OAuth credential은 저장소에 넣지 않는다.
+7. auth가 없는 요청과 유효하지 않은 session은 결정적으로 거부하되 meter별 owner/viewer authorization 정책은 다음 WorkUnit에서 별도로 구현한다.
+8. 실제 OAuth credential, production secret, production deploy, 실제 사용자 데이터는 사용자 승인 없이 만들거나 저장소에 넣지 않는다.
+9. 공식 경로를 확인한 뒤에도 동급 구현 선택지가 장기 security/state ownership을 갈라놓으면 구현 전에 Discussion Gate를 연다.
 
 ## 그 이후 후보
 
-- Google 로그인, 내부 user identity, session
 - server-side ownership/authorization + meter/readings CRUD
 - 실제 모바일 UI와 API/domain 연결
 - 검침 마감 설정 UI: 1~31일 + 월말 선택
