@@ -30,6 +30,8 @@ jobs:
         run: python3 persistence-tests/schema_test.py
       - name: Worker API tests
         run: npm run test:worker
+      - name: Local D1/workerd round trip
+        run: bash persistence-tests/local_runtime_check.sh
       - name: Domain tests (UTC)
         run: npm run test:domain
         env:
