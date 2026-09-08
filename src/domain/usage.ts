@@ -12,7 +12,8 @@ export type UsageDomainErrorCode =
   | 'NON_POSITIVE_INTERVAL'
   | 'INVALID_TIME_ZONE'
   | 'INVALID_BILLING_CLOSE_SETTING'
-  | 'UNRESOLVABLE_LOCAL_DATE';
+  | 'UNRESOLVABLE_LOCAL_DATE'
+  | 'INVALID_FORECAST_WINDOW';
 
 export class UsageDomainError extends Error {
   readonly code: UsageDomainErrorCode;
