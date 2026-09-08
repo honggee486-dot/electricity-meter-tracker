@@ -44,13 +44,18 @@ export interface GoogleJwkProvider {
   getKey(kid: string, nowMs?: number): Promise<JsonWebKey>;
 }
 
-function decodeBase64Url(segment: string): Uint8Array {
+function decodeBase64Url(segment: string): ArrayBuffer {
   if (!/^[A-Za-z0-9_-]+$/.test(segment)) {
     throw new GoogleIdentityError('Malformed Google ID token.');
   }
   const padding = '='.repeat((4 - (segment.length % 4)) % 4);
   const binary = atob(segment.replace(/-/g, '+').replace(/_/g, '/') + padding);
-  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  const buffer = new ArrayBuffer(binary.length);
+  const bytes = new Uint8Array(buffer);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return buffer;
 }
 
 function decodeJson<T>(segment: string): T {
