@@ -25,7 +25,7 @@
 - [x] `.dev.vars` / `.env` 계열 Secret 파일 Git 제외
 - [x] build + persistence + local D1/workerd + Worker/auth/resource API + domain + Playwright GitHub Actions verify 경로 유지
 
-현재 UI는 실제 repository API/domain 계약을 사용합니다. 다만 실제 Cloudflare remote D1 database/binding, Google Client ID/SESSION_SECRET 환경값과 실제 Google Provider 로그인은 아직 구성하지 않았으므로 repository test에서는 deterministic mock과 local D1/workerd만 사용합니다.
+현재 UI는 실제 repository API/domain 계약을 사용합니다. 실제 Cloudflare remote D1 database/binding, Google Client ID/SESSION_SECRET 환경값과 실제 Google Provider 로그인은 아직 구성하지 않았으므로 repository test에서는 deterministic mock과 local D1/workerd만 사용합니다.
 
 ## 완료 WorkUnit: 모바일 UI와 auth/API/domain 연결 baseline
 
@@ -41,20 +41,46 @@
 8. 검침 마감 UI는 `1..31` 또는 별도 `월말`입니다. 29~31일 고정값이 없는 달에는 domain이 그 달 실제 마지막 날을 사용하고, `월말`은 매달 실제 마지막 날을 사용합니다.
 9. 전기요금은 아직 정책 모듈이 없으므로 실제/샘플 금액을 표시하지 않습니다.
 10. Playwright는 API와 GIS를 deterministic하게 mock해 auth 미설정/signed-out 로그인, owner quick write+reload, viewer read-only, 첫 meter 생성, API 실패, 월말 설정, 모바일 폭과 keyboard 흐름을 보호합니다.
-11. 실제 Provider credential, remote D1, production secret, 실사용자 데이터, sharing invitation, PWA/offline write, tariff는 이번 범위에 넣지 않았습니다.
+11. 실제 Provider credential, remote D1, production secret, 실사용자 데이터, sharing invitation, PWA/offline write, tariff는 이 baseline에 포함하지 않았습니다.
 
-## 다음 1순위: preview 환경의 실제 Cloudflare D1 + Google Provider 연결 및 실사용자 E2E
+## 확정 운영 방향: 처음 만든 remote resource를 최종본까지 사용
 
-repository 코드가 아니라 Cloudflare/Google 환경 상태와 credential이 실제 결과를 바꾸는 단계입니다.
+- remote D1은 preview 전용 disposable database를 따로 만들지 않습니다.
+- canonical database 이름은 `electricity-meter-tracker`, Worker binding 이름은 `DB`로 사용합니다.
+- 한국 기본 사용 환경에 맞춰 최초 생성 location hint는 `apac`을 사용하되 별도 jurisdiction 제한은 두지 않습니다.
+- 현재 `dev-electricity-meter-tracker.247dev.workers.dev` 개발 진입점과 향후 production origin이 같은 canonical D1을 사용합니다.
+- remote canonical D1에는 synthetic fixture/mock/test data를 넣지 않습니다. 자동 fixture는 계속 local D1/workerd에서만 사용합니다.
+- remote DB schema 변경은 versioned migration으로만 적용하며 임의 SQL 수정이나 실제 data dump commit은 하지 않습니다.
+- Google Web Client도 최종용 하나를 사용합니다. 현재 dev origin을 Authorized JavaScript origin으로 등록하고 production origin이 확정되면 같은 client에 origin을 추가합니다.
+- `SESSION_SECRET`은 repository 밖 Cloudflare secret으로만 저장합니다. `GOOGLE_CLIENT_ID`와 D1 database ID는 Secret이 아니지만 실제 발급값이 확인된 뒤에만 설정합니다.
+- 세션 TTL은 아직 제품/security policy 값으로 확정하지 않았으므로 임의 기본값을 repository에 고정하지 않습니다.
+
+자세한 provisioning 계약은 `docs/REMOTE_PROVISIONING.md`를 따릅니다.
+
+## 다음 1순위: canonical D1 실제 생성·binding·migration
+
+이 단계는 Cloudflare 계정의 실제 인증 상태가 필요한 runtime/provider 작업입니다.
 
 완료 조건:
 
-1. 현재 Cloudflare 공식 방식과 무료 한도를 다시 확인한 뒤 preview 전용 D1 resource/binding을 연결합니다.
-2. Google OAuth/GIS Client ID를 현재 preview origin에 맞게 설정하고 `GOOGLE_CLIENT_ID`, 강한 `SESSION_SECRET`, TTL을 repository 밖 환경값으로 주입합니다.
-3. 실제 Google 로그인 → first user 생성 → first meter 생성 → reading 저장 → 새로고침 후 동일 raw reading/계산 복원까지 preview에서 검증합니다.
+1. `wrangler d1 list`로 같은 이름의 기존 canonical D1이 없는지 먼저 확인합니다. 있으면 새로 만들지 않고 해당 resource가 이 프로젝트용인지 확인합니다.
+2. 없다면 `electricity-meter-tracker` D1을 `apac` location hint로 한 번만 생성합니다.
+3. 발급된 실제 database ID를 root `wrangler.jsonc`의 `DB` binding에 기록합니다. placeholder/fake UUID는 사용하지 않습니다.
+4. `migrations/0001_initial.sql`을 canonical remote D1에 migration command로 적용하고 migration 상태를 확인합니다.
+5. remote canonical D1에는 local fixture나 synthetic user/meter/reading을 넣지 않습니다.
+6. 관련 build/domain/Worker/local D1 검증을 다시 실행하고 exact-path change만 `work/0.1.0`에 commit/non-force push합니다.
+7. VERSION/tag/Release/main 통합/production deploy는 하지 않습니다.
+
+## 그 다음: 최종용 Google Web Client + preview 실사용자 E2E
+
+완료 조건:
+
+1. 최종용 Google Web Client를 만들고 `https://dev-electricity-meter-tracker.247dev.workers.dev`를 Authorized JavaScript origin으로 등록합니다.
+2. 실제 `GOOGLE_CLIENT_ID`, 강한 `SESSION_SECRET`, 명시적으로 결정한 TTL을 repository 밖 runtime configuration에 주입합니다.
+3. 실제 Google 로그인 → first user 생성 → first meter 생성 → reading 저장 → 새로고침 후 동일 raw reading/계산 복원까지 dev origin에서 검증합니다.
 4. 두 번째 테스트 사용자가 없다면 sharing 권한 검증을 억지로 포함하지 않습니다. 별도 사용자로 검증할 수 있을 때 owner/viewer 격리를 확인합니다.
 5. Secret, cookie, 실제 user row/reading을 commit/log에 노출하지 않습니다.
-6. preview 검증이 끝나도 `main`, VERSION, tag, Release, production deploy는 사용자 승인 없이 변경하지 않습니다.
+6. 실제 사용자가 생긴 뒤에는 dev 검증 때문에 해당 canonical DB를 임의 초기화하거나 fixture로 덮지 않습니다.
 
 ## 그 이후 후보
 

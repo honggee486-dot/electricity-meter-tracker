@@ -8,4 +8,9 @@
     "directory": "./dist",
     "run_worker_first": ["/api/*"]
   }
+
+  // Canonical remote D1 binding is intentionally absent until the real
+  // `electricity-meter-tracker` database has been created. Do not commit a
+  // placeholder/fake database_id. Once created, bind it here as `DB` and keep
+  // local synthetic fixtures on wrangler.local.jsonc only.
 }
