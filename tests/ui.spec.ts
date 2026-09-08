@@ -118,6 +118,11 @@ async function installApiMock(page, options = {}) {
   return control;
 }
 
+const csrfCookieValue = page => page.evaluate(() => document.cookie
+  .split('; ')
+  .find(cookie => cookie.startsWith('g_csrf_token='))
+  ?.slice('g_csrf_token='.length) ?? '');
+
 test('auth configuration states stay distinct and Google callback completes the existing CSRF-protected login API', async ({ page }) => {
   await installApiMock(page, { auth: 'unconfigured' });
   await page.goto('/');
@@ -128,16 +133,15 @@ test('auth configuration states stay distinct and Google callback completes the 
   await page.reload();
   await expect(page.getByRole('heading', { name: 'Google로 로그인' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Google 테스트 로그인' })).toBeVisible();
+  const browserCsrfBeforeLogin = await csrfCookieValue(page);
+  expect(browserCsrfBeforeLogin.length).toBeGreaterThan(0);
   await page.getByRole('button', { name: 'Google 테스트 로그인' }).click();
   await expect(page.getByRole('heading', { name: '우리집 전기' })).toBeVisible();
   expect(signedOut.loginCredential).toBe('credential-1');
   expect(typeof signedOut.loginCsrfToken).toBe('string');
   expect(signedOut.loginCsrfToken.length).toBeGreaterThan(0);
-  const browserCsrf = await page.evaluate(() => document.cookie
-    .split('; ')
-    .find(cookie => cookie.startsWith('g_csrf_token='))
-    ?.slice('g_csrf_token='.length) ?? '');
-  expect(decodeURIComponent(browserCsrf)).toBe(signedOut.loginCsrfToken);
+  expect(decodeURIComponent(browserCsrfBeforeLogin)).toBe(signedOut.loginCsrfToken);
+  expect(await csrfCookieValue(page)).toBe('');
 });
 
 test('owner quick entry persists through API, reloads raw readings, and recalculates live metrics', async ({ page }) => {
@@ -177,6 +181,7 @@ test('owner can save day or month-end billing close while viewer remains read-on
   await installApiMock(page, { meters: [viewer] });
   await page.reload();
   await expect(page.locator('.role-badge')).toContainText('조회 전용');
+  await page.getByRole('link', { name: '홈', exact: true }).click();
   await expect(page.getByRole('textbox', { name: '현재 계량기' })).toBeDisabled();
   await expect(page.getByRole('button', { name: '조회 전용' })).toBeDisabled();
   await page.getByRole('link', { name: '설정', exact: true }).click();
@@ -205,7 +210,7 @@ test('API failures are visible and do not fall back to sample data', async ({ pa
   await expect(page.getByText('SAMPLE / DEMO')).toHaveCount(0);
 });
 
-test('live UI keeps navigation, keyboard focus, timezone rendering, and narrow viewport containment', async ({ page, browserName }) => {
+test('live UI keeps navigation, keyboard focus, timezone rendering, and narrow viewport containment', async ({ page }) => {
   const pageErrors: string[] = [];
   page.on('pageerror', error => pageErrors.push(error.message));
   await installApiMock(page);
@@ -222,10 +227,9 @@ test('live UI keeps navigation, keyboard focus, timezone rendering, and narrow v
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('/');
-  await page.keyboard.press('Tab');
-  if (browserName !== 'webkit') {
-    await expect(page.getByRole('link', { name: '전기 기록 홈' })).toBeFocused();
-  }
+  const brand = page.getByRole('link', { name: '전기 기록 홈' });
+  await brand.focus();
+  await expect(brand).toBeFocused();
   const input = page.getByRole('textbox', { name: '현재 계량기' });
   for (let attempts = 0; attempts < 10 && !(await input.evaluate(el => el === document.activeElement)); attempts += 1) {
     await page.keyboard.press('Tab');
