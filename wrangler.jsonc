@@ -1,0 +1,9 @@
+{
+  "name": "electricity-meter-tracker",
+  "compatibility_date": "2026-09-08",
+  "workers_dev": true,
+  "preview_urls": true,
+  "assets": {
+    "directory": "./dist"
+  }
+}
