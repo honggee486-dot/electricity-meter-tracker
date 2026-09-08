@@ -11,9 +11,16 @@ PRODUCT_PORT="${PRODUCT_WORKER_PORT:-8788}"
 LOCAL_LOG="${RUNNER_TEMP:-.wrangler}/electricity-meter-tracker-local-wrangler.log"
 PRODUCT_LOG="${RUNNER_TEMP:-.wrangler}/electricity-meter-tracker-product-wrangler.log"
 LOCAL_BODY="${RUNNER_TEMP:-.wrangler}/electricity-meter-tracker-local-body.json"
+LOCAL_AUTH_BODY="${RUNNER_TEMP:-.wrangler}/electricity-meter-tracker-local-auth-body.json"
 PRODUCT_BODY="${RUNNER_TEMP:-.wrangler}/electricity-meter-tracker-product-body.json"
+PRODUCT_AUTH_BODY="${RUNNER_TEMP:-.wrangler}/electricity-meter-tracker-product-auth-body.json"
 LOCAL_PID=""
 PRODUCT_PID=""
+SESSION_SECRET="$(python3 - <<'PY'
+import secrets
+print(secrets.token_urlsafe(48))
+PY
+)"
 
 wrangler() {
   npx --yes "wrangler@${WRANGLER_VERSION}" "$@"
@@ -49,29 +56,41 @@ wrangler d1 execute "${DATABASE}" \
 wrangler dev \
   --config "${LOCAL_CONFIG}" \
   --persist-to "${STATE_DIR}" \
+  --var "LOCAL_PERSISTENCE_CHECK:1" \
+  --var "SESSION_SECRET:${SESSION_SECRET}" \
+  --var "SESSION_TTL_SECONDS:3600" \
   --ip 127.0.0.1 \
   --port "${LOCAL_PORT}" \
   --log-level error >"${LOCAL_LOG}" 2>&1 &
 LOCAL_PID=$!
 
-local_status=""
-for _ in $(seq 1 60); do
-  if ! kill -0 "${LOCAL_PID}" 2>/dev/null; then
-    cat "${LOCAL_LOG}"
-    exit 1
-  fi
-  local_status="$(curl --silent --show-error --output "${LOCAL_BODY}" --write-out '%{http_code}' "http://127.0.0.1:${LOCAL_PORT}/api/_dev/persistence-check" || true)"
-  if [[ "${local_status}" == "200" ]]; then
-    break
-  fi
-  sleep 0.5
-done
+wait_for_status() {
+  local pid="$1"
+  local log="$2"
+  local body="$3"
+  local url="$4"
+  local expected="$5"
+  local status=""
+  for _ in $(seq 1 60); do
+    if ! kill -0 "${pid}" 2>/dev/null; then
+      cat "${log}"
+      return 1
+    fi
+    status="$(curl --silent --show-error --output "${body}" --write-out '%{http_code}' "${url}" || true)"
+    if [[ "${status}" == "${expected}" ]]; then
+      printf '%s' "${status}"
+      return 0
+    fi
+    sleep 0.5
+  done
+  cat "${log}"
+  echo "Expected ${url} HTTP ${expected}, got ${status:-no response}." >&2
+  return 1
+}
 
-if [[ "${local_status}" != "200" ]]; then
-  cat "${LOCAL_LOG}"
-  echo "Expected local persistence probe HTTP 200, got ${local_status:-no response}." >&2
-  exit 1
-fi
+wait_for_status \
+  "${LOCAL_PID}" "${LOCAL_LOG}" "${LOCAL_BODY}" \
+  "http://127.0.0.1:${LOCAL_PORT}/api/_dev/persistence-check" "200" >/dev/null
 
 python3 - "${LOCAL_BODY}" <<'PY'
 import json
@@ -91,6 +110,26 @@ if body != expected:
     raise SystemExit(f"Unexpected local D1 probe response: {body!r}")
 PY
 
+wait_for_status \
+  "${LOCAL_PID}" "${LOCAL_LOG}" "${LOCAL_AUTH_BODY}" \
+  "http://127.0.0.1:${LOCAL_PORT}/api/_dev/auth-check" "200" >/dev/null
+
+python3 - "${LOCAL_AUTH_BODY}" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    body = json.load(handle)
+
+expected = {
+    "ok": True,
+    "stableUser": True,
+    "sessionResolved": True,
+}
+if body != expected:
+    raise SystemExit(f"Unexpected local auth probe response: {body!r}")
+PY
+
 kill "${LOCAL_PID}" 2>/dev/null || true
 wait "${LOCAL_PID}" 2>/dev/null || true
 LOCAL_PID=""
@@ -102,26 +141,13 @@ wrangler dev \
   --log-level error >"${PRODUCT_LOG}" 2>&1 &
 PRODUCT_PID=$!
 
-product_status=""
-for _ in $(seq 1 60); do
-  if ! kill -0 "${PRODUCT_PID}" 2>/dev/null; then
-    cat "${PRODUCT_LOG}"
-    exit 1
-  fi
-  product_status="$(curl --silent --show-error --output "${PRODUCT_BODY}" --write-out '%{http_code}' "http://127.0.0.1:${PRODUCT_PORT}/api/_dev/persistence-check" || true)"
-  if [[ "${product_status}" != "000" && -n "${product_status}" ]]; then
-    break
-  fi
-  sleep 0.5
-done
-
-if [[ "${product_status}" != "404" ]]; then
-  cat "${PRODUCT_LOG}"
-  echo "Expected product config probe HTTP 404, got ${product_status:-no response}." >&2
-  exit 1
-fi
-
-python3 - "${PRODUCT_BODY}" <<'PY'
+assert_product_probe_closed() {
+  local path="$1"
+  local body="$2"
+  wait_for_status \
+    "${PRODUCT_PID}" "${PRODUCT_LOG}" "${body}" \
+    "http://127.0.0.1:${PRODUCT_PORT}${path}" "404" >/dev/null
+  python3 - "${body}" <<'PY'
 import json
 import sys
 
@@ -137,5 +163,9 @@ expected = {
 if body != expected:
     raise SystemExit(f"Unexpected product route response: {body!r}")
 PY
+}
 
-echo "Local D1/workerd round trip verified with Wrangler ${WRANGLER_VERSION}."
+assert_product_probe_closed "/api/_dev/persistence-check" "${PRODUCT_BODY}"
+assert_product_probe_closed "/api/_dev/auth-check" "${PRODUCT_AUTH_BODY}"
+
+echo "Local D1/workerd persistence and auth round trip verified with Wrangler ${WRANGLER_VERSION}."
