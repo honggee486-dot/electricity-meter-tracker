@@ -218,6 +218,52 @@ class PersistenceSchemaTests(unittest.TestCase):
         self.assertIn("idx_meter_members_user", plans["viewer"])
         self.assertIn("ux_readings_meter_measured_at", plans["readings"])
 
+    def test_authorization_and_neighbor_queries_reuse_existing_indexes(self):
+        accessible = self.query_plan(
+            """
+            SELECT meter_id, 'owner' AS access_role
+            FROM meters
+            WHERE owner_user_id = ?1
+            UNION ALL
+            SELECT m.meter_id, 'viewer' AS access_role
+            FROM meter_members AS mm
+            JOIN meters AS m ON m.meter_id = mm.meter_id
+            WHERE mm.user_id = ?1 AND m.owner_user_id <> ?1
+            ORDER BY meter_id
+            """,
+            {"1": "user"},
+        )
+        access = self.query_plan(
+            """
+            SELECT m.meter_id
+            FROM meters AS m
+            LEFT JOIN meter_members AS mm
+              ON mm.meter_id = m.meter_id AND mm.user_id = ?2
+            WHERE m.meter_id = ?1
+              AND (m.owner_user_id = ?2 OR mm.user_id IS NOT NULL)
+            LIMIT 1
+            """,
+            {"1": "meter", "2": "user"},
+        )
+        previous_reading = self.query_plan(
+            "SELECT reading_id FROM readings "
+            "WHERE meter_id = ?1 AND measured_at_ms < ?2 "
+            "ORDER BY measured_at_ms DESC LIMIT 1",
+            {"1": "meter", "2": 2000},
+        )
+        exact_reading = self.query_plan(
+            "SELECT reading_id FROM readings "
+            "WHERE meter_id = ?1 AND measured_at_ms = ?2 LIMIT 1",
+            {"1": "meter", "2": 2000},
+        )
+
+        self.assertIn("idx_meters_owner_user", accessible)
+        self.assertIn("idx_meter_members_user", accessible)
+        self.assertIn("sqlite_autoindex_meters_1", access)
+        self.assertIn("sqlite_autoindex_meter_members_1", access)
+        self.assertIn("ux_readings_meter_measured_at", previous_reading)
+        self.assertIn("ux_readings_meter_measured_at", exact_reading)
+
 
 if __name__ == "__main__":
     unittest.main()
