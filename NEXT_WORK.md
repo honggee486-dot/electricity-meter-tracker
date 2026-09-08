@@ -1,6 +1,6 @@
 # NEXT_WORK.md
 
-## 현재 완료: architecture / mobile preview / 순수 domain + Worker API shell baseline
+## 현재 완료: architecture / mobile preview / 순수 domain + Worker API shell + D1 schema baseline
 
 - [x] Vite + TypeScript + 기본 DOM/CSS 선택, 런타임 프레임워크 없음
 - [x] Workers Static Assets 개발 preview 및 `work/*` 자동 preview 경로 확인
@@ -25,38 +25,47 @@
 - [x] 동일-origin Worker module entry + `/api/health` deterministic route
 - [x] `/api/*` selective Worker-first routing으로 기존 static asset fast path 유지
 - [x] JSON API 404/405 error envelope와 no-store 응답 baseline
-- [x] build + Worker API + domain + Playwright를 보호하는 GitHub Actions verify workflow
+- [x] `migrations/0001_initial.sql` D1 persistence schema baseline
+- [x] 내부 `user_id`와 unique Google subject 분리
+- [x] meter owner / name / timezone / `day|month-end` 검침 설정 보존
+- [x] reading 원본 `meter / measured_at_ms / cumulative_wh` 보존 및 동일 meter·동일 instant 중복 차단
+- [x] owner는 `meters.owner_user_id`, 공유 viewer는 `meter_members`로 단순 분리
+- [x] 주요 owner/member/reading 조회용 최소 index와 foreign key/cascade 계약
+- [x] SQLite in-memory migration contract test를 CI에 추가
+- [x] build + persistence + Worker API + domain + Playwright를 보호하는 GitHub Actions verify workflow
 
-UI는 아직 `src/demo.ts`의 고정 SAMPLE / DEMO DATA를 사용하며 실제 domain/API 결과와 연결하지 않습니다. D1/auth/실제 CRUD도 아직 없습니다.
+UI는 아직 `src/demo.ts`의 고정 SAMPLE / DEMO DATA를 사용하며 실제 domain/API/D1 결과와 연결하지 않습니다. 실제 D1 binding/database, auth, CRUD도 아직 없습니다.
 
-## 완료 WorkUnit: Worker runtime + 최소 API shell
+## 완료 WorkUnit: D1 persistence schema + migration baseline
 
 현재 baseline:
 
-1. `src/worker.ts`가 Cloudflare Worker module entry와 현재 API request owner다.
-2. `GET /api/health`는 외부 상태나 시각에 의존하지 않는 `{ "ok": true }` JSON을 반환하고 cache를 금지한다.
-3. 같은 health route의 다른 method는 `405 METHOD_NOT_ALLOWED`와 `Allow: GET`을 반환한다.
-4. 등록되지 않은 `/api` 경로는 공통 `{ error: { code, message } }` envelope의 404를 반환한다.
-5. `wrangler.jsonc`는 `main`을 Worker entry에 연결하고 `assets.run_worker_first`를 `/api/*`에만 적용한다. 정적 asset 요청은 기본 asset-first 경로를 유지한다.
-6. pure usage/calendar/billing/forecast domain은 Worker `Request`/`Response`나 binding을 import하지 않는다.
-7. Worker API 테스트는 별도 임시 compile output `.worker-test/`에서 Node 내장 test runner로 실행한다.
-8. Google auth, D1 binding/schema, 실제 meter/readings CRUD, UI 연결은 아직 구현하지 않는다.
-9. 2026-09-08 Cloudflare 공식 문서 기준 Workers Free는 100,000 Worker requests/day, HTTP request당 10 ms CPU이며 Static Assets 요청은 무료·무제한이다. 실제 비용/한도 결정 시 다시 확인한다.
+1. `migrations/0001_initial.sql`이 현재 persistence schema의 단일 초기 migration이다.
+2. `users.user_id`는 내부 식별자이고 `google_subject`는 별도 unique provider identity다. 이메일은 identity key로 저장하지 않는다.
+3. `meters.owner_user_id`가 정확한 owner의 canonical source다. owner 삭제는 참조 meter가 남아 있는 동안 foreign key로 차단한다.
+4. `meter_members`는 명시적으로 공유한 viewer grant만 보존한다. 같은 meter/user 중복 grant는 primary key로 차단한다.
+5. meter는 `name`, IANA timezone 문자열, `billing_close_kind`, `billing_close_day`를 저장한다. `day`는 1~31이 필수이고 `month-end`는 day가 `NULL`이어야 한다.
+6. `readings`는 `reading_id`, `meter_id`, `measured_at_ms`, `cumulative_wh`, `created_at_ms`만 저장한다. 일별 사용량·보간값·forecast·요금 같은 파생값은 저장하지 않는다.
+7. 같은 meter의 정확히 같은 measured instant는 unique index로 차단하지만 같은 누적값을 더 늦은 시각에 다시 기록하는 것은 허용한다. 누적값 역행 검사는 현재 domain/API owner가 담당한다.
+8. meter 삭제는 해당 viewer grant와 reading을 cascade 삭제하지만 user 자체는 삭제하지 않는다.
+9. owner별 meter, user별 shared meter, meter별 측정시각 조회를 위한 최소 index만 둬 read amplification을 줄이고 불필요한 index write는 피한다.
+10. `persistence-tests/schema_test.py`는 Python 표준 `sqlite3` in-memory DB에 migration을 적용해 table/index/FK/uniqueness/check/cascade 계약을 검증한다. 앱 runtime에는 Python dependency가 없다.
+11. 2026-09-08 Cloudflare 공식 문서 기준 D1 Workers Free는 5,000,000 rows read/day, 100,000 rows written/day, 계정 총 5 GB, database당 500 MB, account당 10 databases이며 Free 한도 초과 시 query가 실패하고 자동 유료 과금으로 전환되지 않는다.
+12. 실제 Cloudflare D1 database/binding은 아직 만들거나 연결하지 않았고 production data/migration은 변경하지 않았다.
 
-## 다음 1순위 WorkUnit: D1 persistence schema + migration baseline
+## 다음 1순위 WorkUnit: D1 binding + 최소 persistence query owner
 
-현재 domain/API shell 위에 실제 사용자 데이터를 저장할 최소 D1 구조를 추가합니다. Google 로그인과 CRUD authorization을 한 번에 묶지 않습니다.
+현재 schema를 실제 Worker persistence 경계에 연결하되 Google auth와 전체 CRUD를 한 번에 묶지 않습니다.
 
 완료 조건:
 
-1. 구현 시점의 Cloudflare D1 공식 문서와 현재 Free 한도/제약을 다시 확인한다.
-2. `users`, `meters`, `readings`, `meter_members` 후보를 현재 identity/owner-viewer/domain 계약과 대조해 최소 schema로 확정한다.
-3. provider email을 불변 사용자 ID로 사용하지 않고 내부 `user_id`와 향후 Google stable subject 연결을 허용한다.
-4. meter별 name / timezone / billing close setting을 보존하고 reading은 meter / measured instant / cumulative value 원본 의미를 보존한다.
-5. 파생 usage/forecast 값을 불필요하게 저장하지 않는다.
-6. foreign key/index/uniqueness가 사용자 데이터 분리와 주요 조회 패턴을 보호하도록 최소 migration을 만든다.
-7. migration/schema 검증 경로를 추가하되 실제 사용자 데이터나 production D1을 변경하지 않는다.
-8. Google OAuth/session, authorization CRUD, UI 연결, production deploy는 아직 구현하지 않는다.
+1. 구현 시점의 Cloudflare D1 binding/local-development 공식 문서와 현재 Free 한도/제약을 다시 확인한다.
+2. 실제 remote D1 resource 생성이나 production binding/deploy가 필요하면 사용자 승인 없이 실행하지 않는다. 먼저 local/preview 경로를 우선한다.
+3. `src/domain/*`는 D1/SQL을 import하지 않고 순수 owner를 유지한다.
+4. 최소 persistence module이 parameterized query와 row↔domain 입력 경계를 소유하도록 한다.
+5. owner meter lookup, viewer membership lookup, meter readings ordered lookup에 현재 index가 실제로 맞는지 query plan/통합 테스트로 확인한다.
+6. migration을 local D1-compatible runtime에서 적용하고 최소 read/write round trip을 검증한다.
+7. 실제 사용자 데이터, Google OAuth/session, authorization CRUD, UI 연결, tariff, production deploy로 범위를 넓히지 않는다.
 
 ## 그 이후 후보
 
@@ -66,6 +75,6 @@ UI는 아직 `src/demo.ts`의 고정 SAMPLE / DEMO DATA를 사용하며 실제 d
 - 검침 마감 설정 UI: 1~31일 + 월말 선택
 - PWA installability; offline write/background sync는 별도 필요 확인 전 보류
 - version/effective date를 갖는 독립 전기요금 policy
-- 실제 owner/viewer 공유
+- 실제 owner/viewer 공유 UI/관리
 
 VERSION/tag/release/main 통합/정식 production 배포는 사용자 승인 없이 진행하지 않습니다.

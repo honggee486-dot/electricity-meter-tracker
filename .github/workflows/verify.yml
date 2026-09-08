@@ -26,6 +26,8 @@ jobs:
         run: npm ci
       - name: Typecheck and build
         run: npm run build
+      - name: Persistence schema tests
+        run: python3 persistence-tests/schema_test.py
       - name: Worker API tests
         run: npm run test:worker
       - name: Domain tests (UTC)
