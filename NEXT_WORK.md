@@ -1,6 +1,6 @@
 # NEXT_WORK.md
 
-## 현재 완료: architecture / domain / Worker+D1 / Google session / authorized CRUD / live mobile UI baseline
+## 현재 완료: architecture / domain / Worker+D1 / Google session / authorized CRUD / live mobile UI baseline / canonical remote D1 provisioning
 
 - [x] Vite + TypeScript + 기본 DOM/CSS, 런타임 프레임워크 없음
 - [x] Workers Static Assets 개발 preview 및 `work/*` 자동 preview 경로
@@ -24,8 +24,9 @@
 - [x] deterministic Playwright API/GIS mock으로 auth/owner/viewer/첫 meter/API 실패/빠른 입력/월말 설정/320px/keyboard 회귀 보호
 - [x] `.dev.vars` / `.env` 계열 Secret 파일 Git 제외
 - [x] build + persistence + local D1/workerd + Worker/auth/resource API + domain + Playwright GitHub Actions verify 경로 유지
+- [x] canonical Cloudflare D1 생성, root `DB` binding 기록, `0001_initial.sql` remote migration 적용 및 상태 확인
 
-현재 UI는 실제 repository API/domain 계약을 사용합니다. 실제 Cloudflare remote D1 database/binding, Google Client ID/SESSION_SECRET 환경값과 실제 Google Provider 로그인은 아직 구성하지 않았으므로 repository test에서는 deterministic mock과 local D1/workerd만 사용합니다.
+현재 UI는 실제 repository API/domain 계약을 사용합니다. canonical Cloudflare remote D1 database/binding/migration은 구성했으며, Google Client ID/SESSION_SECRET 환경값과 실제 Google Provider 로그인은 아직 구성하지 않았으므로 repository test에서는 deterministic mock과 local D1/workerd를 사용합니다.
 
 ## 완료 WorkUnit: 모바일 UI와 auth/API/domain 연결 baseline
 
@@ -57,21 +58,14 @@
 
 자세한 provisioning 계약은 `docs/REMOTE_PROVISIONING.md`를 따릅니다.
 
-## 다음 1순위: canonical D1 실제 생성·binding·migration
+## 완료 WorkUnit: canonical D1 실제 생성·binding·migration
 
-이 단계는 Cloudflare 계정의 실제 인증 상태가 필요한 runtime/provider 작업입니다.
+- Cloudflare 계정에서 기존 동일 이름 D1이 없음을 확인한 뒤 `electricity-meter-tracker`를 `apac` location hint로 한 번 생성했습니다.
+- 실제 database ID를 root `wrangler.jsonc`의 `DB` binding에 기록하고 `migrations/0001_initial.sql`을 canonical remote D1에 적용했습니다.
+- migration 재조회에서 미적용 항목이 없고, metadata-only query로 `users`, `meters`, `meter_members`, `readings`, `d1_migrations` 테이블을 확인했습니다.
+- canonical remote D1에는 local fixture나 synthetic user/meter/reading을 넣지 않았습니다.
 
-완료 조건:
-
-1. `wrangler d1 list`로 같은 이름의 기존 canonical D1이 없는지 먼저 확인합니다. 있으면 새로 만들지 않고 해당 resource가 이 프로젝트용인지 확인합니다.
-2. 없다면 `electricity-meter-tracker` D1을 `apac` location hint로 한 번만 생성합니다.
-3. 발급된 실제 database ID를 root `wrangler.jsonc`의 `DB` binding에 기록합니다. placeholder/fake UUID는 사용하지 않습니다.
-4. `migrations/0001_initial.sql`을 canonical remote D1에 migration command로 적용하고 migration 상태를 확인합니다.
-5. remote canonical D1에는 local fixture나 synthetic user/meter/reading을 넣지 않습니다.
-6. 관련 build/domain/Worker/local D1 검증을 다시 실행하고 exact-path change만 `work/0.1.0`에 commit/non-force push합니다.
-7. VERSION/tag/Release/main 통합/production deploy는 하지 않습니다.
-
-## 그 다음: 최종용 Google Web Client + preview 실사용자 E2E
+## 다음 1순위: 최종용 Google Web Client + preview 실사용자 E2E
 
 완료 조건:
 

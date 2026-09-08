@@ -8,6 +8,13 @@
     "directory": "./dist",
     "run_worker_first": ["/api/*"]
   }
-
-  // CANONICAL_D1_BINDING_PLACEHOLDER
+,
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "electricity-meter-tracker",
+      "database_id": "c295ee25-8a5c-4193-9889-3df4a246d6fb",
+      "migrations_dir": "migrations"
+    }
+  ]
 }
