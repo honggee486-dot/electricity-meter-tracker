@@ -28,25 +28,32 @@ function encodeBase64Url(bytes: Uint8Array): string {
   return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
 }
 
-function decodeBase64Url(value: string): Uint8Array {
+function decodeBase64Url(value: string): ArrayBuffer {
   if (!/^[A-Za-z0-9_-]+$/.test(value)) {
     throw new SessionError('Session token is malformed.');
   }
   const padding = '='.repeat((4 - (value.length % 4)) % 4);
   try {
     const binary = atob(value.replace(/-/g, '+').replace(/_/g, '/') + padding);
-    return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    const buffer = new ArrayBuffer(binary.length);
+    const bytes = new Uint8Array(buffer);
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+    return buffer;
   } catch {
     throw new SessionError('Session token is malformed.');
   }
 }
 
-function requireSecret(secret: string): Uint8Array {
-  const bytes = new TextEncoder().encode(secret);
-  if (bytes.byteLength < 32) {
+function requireSecret(secret: string): ArrayBuffer {
+  const encoded = new TextEncoder().encode(secret);
+  if (encoded.byteLength < 32) {
     throw new SessionError('Session secret must be at least 32 bytes.');
   }
-  return bytes;
+  const buffer = new ArrayBuffer(encoded.byteLength);
+  new Uint8Array(buffer).set(encoded);
+  return buffer;
 }
 
 function requireTtl(ttlSeconds: number): void {
