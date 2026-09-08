@@ -5,6 +5,7 @@ name: Verify
     branches:
       - main
       - 'work/**'
+      - scratch-invalid-do-not-use
   pull_request:
 
 permissions:
