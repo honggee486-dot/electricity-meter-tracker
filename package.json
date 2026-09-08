@@ -8,7 +8,9 @@
     "typecheck": "tsc --noEmit",
     "build": "npm run typecheck && vite build",
     "preview": "vite preview --host 127.0.0.1",
-    "test": "playwright test"
+    "test:domain": "tsc -p tsconfig.domain-test.json && node --test domain-tests/usage.test.mjs",
+    "test:ui": "playwright test",
+    "test": "npm run test:domain && npm run test:ui"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0",

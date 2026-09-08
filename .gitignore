@@ -11,6 +11,7 @@ dist/
 build/
 .cache/
 .wrangler/
+.domain-test/
 
 # Logs
 *.log

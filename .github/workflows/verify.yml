@@ -1,0 +1,40 @@
+name: Verify
+
+"on":
+  push:
+    branches:
+      - main
+      - 'work/**'
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Typecheck and build
+        run: npm run build
+      - name: Domain tests (UTC)
+        run: npm run test:domain
+        env:
+          TZ: UTC
+      - name: Domain tests (Asia/Seoul)
+        run: npm run test:domain
+        env:
+          TZ: Asia/Seoul
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium webkit
+      - name: Browser tests
+        run: npm run test:ui
