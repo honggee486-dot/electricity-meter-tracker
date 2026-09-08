@@ -38,7 +38,8 @@ async function installApiMock(page, options = {}) {
     readings: structuredClone(options.readings ?? baseReadings),
     lastReadingPost: null,
     lastMeterPut: null,
-    loginCsrfMatched: false,
+    loginCredential: null,
+    loginCsrfToken: null,
   };
 
   await page.addInitScript(now => { Date.now = () => now; }, NOW_MS);
@@ -66,9 +67,8 @@ async function installApiMock(page, options = {}) {
     }
     if (path === '/api/auth/google' && method === 'POST') {
       const form = new URLSearchParams(request.postData() ?? '');
-      const cookie = request.headers().cookie ?? '';
-      const csrf = form.get('g_csrf_token');
-      control.loginCsrfMatched = Boolean(csrf && cookie.includes(`g_csrf_token=${csrf}`));
+      control.loginCredential = form.get('credential');
+      control.loginCsrfToken = form.get('g_csrf_token');
       control.authenticated = true;
       return json(200, { authenticated: true, userId: 'owner-1' });
     }
@@ -130,7 +130,14 @@ test('auth configuration states stay distinct and Google callback completes the 
   await expect(page.getByRole('button', { name: 'Google 테스트 로그인' })).toBeVisible();
   await page.getByRole('button', { name: 'Google 테스트 로그인' }).click();
   await expect(page.getByRole('heading', { name: '우리집 전기' })).toBeVisible();
-  expect(signedOut.loginCsrfMatched).toBe(true);
+  expect(signedOut.loginCredential).toBe('credential-1');
+  expect(typeof signedOut.loginCsrfToken).toBe('string');
+  expect(signedOut.loginCsrfToken.length).toBeGreaterThan(0);
+  const browserCsrf = await page.evaluate(() => document.cookie
+    .split('; ')
+    .find(cookie => cookie.startsWith('g_csrf_token='))
+    ?.slice('g_csrf_token='.length) ?? '');
+  expect(decodeURIComponent(browserCsrf)).toBe(signedOut.loginCsrfToken);
 });
 
 test('owner quick entry persists through API, reloads raw readings, and recalculates live metrics', async ({ page }) => {
@@ -139,7 +146,7 @@ test('owner quick entry persists through API, reloads raw readings, and recalcul
   await expect(page.getByRole('heading', { name: '우리집 전기' })).toBeVisible();
   await expect(page.locator('.hero-number')).toContainText('5.0');
 
-  const input = page.getByLabel('현재 계량기', { exact: true });
+  const input = page.getByRole('textbox', { name: '현재 계량기' });
   const submit = page.getByRole('button', { name: '기록하기' });
   await expect(submit).toBeDisabled();
   for (const value of [' ', 'abc', '-1', '1e3', '12..3', '.', '12.', '12.1234']) {
@@ -170,7 +177,7 @@ test('owner can save day or month-end billing close while viewer remains read-on
   await installApiMock(page, { meters: [viewer] });
   await page.reload();
   await expect(page.locator('.role-badge')).toContainText('조회 전용');
-  await expect(page.getByLabel('현재 계량기', { exact: true })).toBeDisabled();
+  await expect(page.getByRole('textbox', { name: '현재 계량기' })).toBeDisabled();
   await expect(page.getByRole('button', { name: '조회 전용' })).toBeDisabled();
   await page.getByRole('link', { name: '설정', exact: true }).click();
   await expect(page.locator('#meter-settings-form')).toHaveCount(0);
@@ -206,7 +213,7 @@ test('live UI keeps navigation, keyboard focus, timezone rendering, and narrow v
     await page.setViewportSize({ width, height: 844 });
     await page.goto('/');
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-    const input = page.getByLabel('현재 계량기', { exact: true });
+    const input = page.getByRole('textbox', { name: '현재 계량기' });
     await input.fill('999999999999.99');
     await expect(page.getByRole('button', { name: '기록하기' })).toBeEnabled();
     expect(await input.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
@@ -219,7 +226,7 @@ test('live UI keeps navigation, keyboard focus, timezone rendering, and narrow v
   if (browserName !== 'webkit') {
     await expect(page.getByRole('link', { name: '전기 기록 홈' })).toBeFocused();
   }
-  const input = page.getByLabel('현재 계량기', { exact: true });
+  const input = page.getByRole('textbox', { name: '현재 계량기' });
   for (let attempts = 0; attempts < 10 && !(await input.evaluate(el => el === document.activeElement)); attempts += 1) {
     await page.keyboard.press('Tab');
   }
