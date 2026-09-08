@@ -4,11 +4,12 @@
 DELETE FROM readings WHERE meter_id = 'local-meter';
 DELETE FROM meter_members WHERE meter_id = 'local-meter';
 DELETE FROM meters WHERE meter_id = 'local-meter';
-DELETE FROM users WHERE user_id IN ('local-owner', 'local-viewer');
+DELETE FROM users WHERE user_id IN ('local-owner', 'local-viewer', 'local-outsider');
 
 INSERT INTO users (user_id, google_subject, created_at_ms) VALUES
   ('local-owner', 'local-owner-subject', 1),
-  ('local-viewer', 'local-viewer-subject', 1);
+  ('local-viewer', 'local-viewer-subject', 1),
+  ('local-outsider', 'local-outsider-subject', 1);
 
 INSERT INTO meters (
   meter_id, owner_user_id, name, timezone,
