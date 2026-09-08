@@ -37,13 +37,11 @@ mkdir -p "${STATE_DIR}"
 
 wrangler d1 migrations apply "${DATABASE}" \
   --local \
-  --yes \
   --config "${LOCAL_CONFIG}" \
   --persist-to "${STATE_DIR}"
 
 wrangler d1 execute "${DATABASE}" \
   --local \
-  --yes \
   --config "${LOCAL_CONFIG}" \
   --persist-to "${STATE_DIR}" \
   --file persistence-tests/local_fixture.sql
