@@ -1,9 +1,14 @@
 export type D1Value = string | number | null | ArrayBuffer | ArrayBufferView;
 
+export interface D1RunResultLike {
+  success: boolean;
+}
+
 export interface D1PreparedStatementLike {
   bind(...values: D1Value[]): D1PreparedStatementLike;
   first<T extends Record<string, unknown> = Record<string, unknown>>(): Promise<T | null>;
   all<T extends Record<string, unknown> = Record<string, unknown>>(): Promise<{ results: T[] }>;
+  run(): Promise<D1RunResultLike>;
 }
 
 export interface D1DatabaseLike {
@@ -120,6 +125,49 @@ export async function findUserByGoogleSubject(
     .first();
 
   return row === null ? null : mapUser(row);
+}
+
+export async function findUserById(
+  db: D1DatabaseLike,
+  userId: string,
+): Promise<PersistedUser | null> {
+  const row = await db
+    .prepare(
+      `SELECT user_id, google_subject, created_at_ms
+       FROM users
+       WHERE user_id = ?1
+       LIMIT 1`,
+    )
+    .bind(userId)
+    .first();
+
+  return row === null ? null : mapUser(row);
+}
+
+export async function ensureUserByGoogleSubject(
+  db: D1DatabaseLike,
+  googleSubject: string,
+  candidateUserId: string,
+  createdAtMs: number,
+): Promise<PersistedUser> {
+  const existing = await findUserByGoogleSubject(db, googleSubject);
+  if (existing) {
+    return existing;
+  }
+
+  await db
+    .prepare(
+      `INSERT OR IGNORE INTO users (user_id, google_subject, created_at_ms)
+       VALUES (?1, ?2, ?3)`,
+    )
+    .bind(candidateUserId, googleSubject, createdAtMs)
+    .run();
+
+  const stored = await findUserByGoogleSubject(db, googleSubject);
+  if (!stored) {
+    throw new PersistenceDataError('Failed to resolve user after first-login insert.');
+  }
+  return stored;
 }
 
 export async function listOwnedMeters(
