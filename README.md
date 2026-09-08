@@ -12,9 +12,9 @@
 - 홈의 빠른 입력은 현재 시각 + 누적 kWh를 raw reading API에 저장한 뒤 최신 raw readings를 다시 읽습니다. localStorage, offline write queue, 파생값 DB 저장은 없습니다.
 - 홈 / 기록 / 분석 / 설정 하단 탐색을 유지하며 실제 raw reading을 usage/daily/billing/forecast domain에 넣어 구간 사용량·소비전력·최근 일평균·검침주기·마감 예상·30일 환산을 계산합니다.
 - owner 설정은 검침 마감 `1~31일 + 월말`을 지원합니다. 29~31일 고정값이 없는 달은 그 달 실제 월말로 자동 보정하며 `월말`은 항상 매달 마지막 날입니다.
-- 실제 한전 요금 policy는 아직 없으므로 샘플 금액을 표시하지 않고 요금 정책 미연결 상태를 명시합니다.
+- 홈 예상 전기요금은 `src/domain/tariff.ts`의 주택용(저압) 2023-11-09 개정 policy(2026-09-09 공식 출처 확인)로 기본요금·전력량요금 추정 소계만 계산합니다. 연료비조정·기후환경요금·부가세·기금·복지할인 등은 policy 데이터의 `excludedComponents`로 명시하고 실제 청구액처럼 표시하지 않습니다. policy가 커버하지 않는 마감 월은 요금 정책 미연결 표시를 유지합니다. 자세한 provenance와 계산 규칙은 `docs/TARIFF_POLICY.md`를 따릅니다.
 - `src/api.ts`는 frontend same-origin HTTP 경계를 소유하고 SQL/D1 세부를 알지 않습니다.
-- `src/domain/usage.ts`는 누적값 정규화와 절대 instant 구간 계산을, `src/domain/calendar.ts`는 IANA timezone 기반 calendar 경계를, `src/domain/dailyUsage.ts`는 일자별 분할을, `src/domain/billingCycle.ts`는 검침 마감 설정·주기·경계 보간을, `src/domain/forecast.ts`는 최근/주기 평균·마감 예상·30일 환산·이전 주기 비교와 신뢰도 evidence를 소유합니다.
+- `src/domain/usage.ts`는 누적값 정규화와 절대 instant 구간 계산을, `src/domain/calendar.ts`는 IANA timezone 기반 calendar 경계를, `src/domain/dailyUsage.ts`는 일자별 분할을, `src/domain/billingCycle.ts`는 검침 마감 설정·주기·경계 보간을, `src/domain/forecast.ts`는 최근/주기 평균·마감 예상·30일 환산·이전 주기 비교와 신뢰도 evidence를, `src/domain/tariff.ts`는 usage와 분리된 전기요금 policy(version/effective window, 공식 출처 provenance·확인일, 누진·계절·기본요금, 반올림과 명시적 미반영 항목)를 소유합니다.
 - `src/persistence/d1.ts`는 D1-compatible prepared query와 DB row 검증 경계를 소유합니다. Google subject/internal user, owner/viewer access lookup, meter/readings CRUD와 reading 이웃 조회를 담당합니다.
 - `src/auth/google.ts`는 Google GIS ID token의 RS256/JWK 서명과 issuer/audience/expiry/subject를 검증하고, `src/auth/session.ts`는 Web Crypto HMAC으로 `__Host-em_session` cookie를 서명·검증합니다.
 - `src/worker.ts`는 동일-origin API request owner입니다. health/auth baseline과 `/api/meters*` product API를 제공하며 모든 meter/readings route에서 내부 session과 owner/viewer 권한을 서버에서 강제합니다. local D1/auth 검증 probe는 명시적 local gate가 없으면 404입니다.
@@ -102,7 +102,7 @@ npm run test:ui
 - login POST의 `g_csrf_token`은 cookie/body double-submit 값이 정확히 하나씩 존재하고 같아야 합니다. frontend GIS callback 경로도 same-origin token을 cookie/body에 함께 전달해 동일 서버 검증을 재사용합니다. 로그인 POST는 `application/x-www-form-urlencoded`와 제한된 body 크기만 허용합니다.
 - 최초 정상 로그인은 내부 UUID 후보를 만들고 D1의 unique Google subject 계약을 이용해 한 user row로 수렴합니다. 재로그인은 기존 내부 `user_id`를 재사용합니다.
 - 앱 session은 `__Host-em_session` cookie이며 Web Crypto HMAC-SHA256 서명, `Secure`, `HttpOnly`, `SameSite=Lax`, `Path=/`, Domain 미설정 계약입니다. `SESSION_SECRET`과 `SESSION_TTL_SECONDS`는 환경에서 주입하며 실제 Secret을 저장소에 넣지 않습니다.
-- canonical remote D1은 구성됐습니다. 실제 Google Client ID, `SESSION_SECRET`, 명시적으로 선택한 session TTL과 Provider 로그인 E2E는 아직 구성하지 않았습니다. `.dev.vars`와 실제 `.env`는 Git에서 제외합니다.
+- canonical remote D1과 최종용 Google Web Client ID, repository 밖 Cloudflare secret으로 주입한 `SESSION_SECRET`, 명시적 session TTL이 구성됐고 dev preview origin에서 실제 Google Provider 로그인 → first user/meter 생성 → 저장 → 재로그인 복원 E2E가 검증됐습니다. `.dev.vars`와 실제 `.env`는 Git에서 제외합니다.
 - `scripts/configure-auth-runtime.mjs`는 실제 Google Web Client ID와 명시적인 TTL만 root public vars에 기록하고 `SESSION_SECRET`을 저장소에 넣지 않습니다. 이미 다른 Client ID/TTL이 있으면 자동 덮어쓰지 않습니다.
 - Google GIS 서버 검증 근거는 `2026-09-08` 확인한 Google 공식 문서, Worker crypto/secret 근거는 같은 날 확인한 Cloudflare 공식 문서입니다.
   - https://developers.google.com/identity/gsi/web/guides/verify-google-id-token
@@ -151,7 +151,7 @@ npm run test:ui
 | `migrations/` | D1 schema/migration source. 현재는 users/meters/viewer grants/raw readings와 DB-level integrity/index 계약만 소유 |
 | `wrangler.local.jsonc`, `persistence-tests/local_fixture.sql`, `persistence-tests/local_runtime_check.sh` | local D1/workerd integration evidence 전용. remote resource/config의 source가 아님 |
 | `scripts/configure-canonical-d1.mjs`, `scripts/configure-auth-runtime.mjs` | 실제로 확인된 canonical remote identity/public auth vars만 root config에 기록하는 provisioning guard. Secret이나 remote mutation 자체를 소유하지 않음 |
-| 향후 tariff policy | usage와 별도 모듈. 정책 version/effective date, 누진·계절·기본요금·조정요금·세금·기금·반올림을 소유 |
+| `src/domain/tariff.ts` | usage와 별도 tariff policy 모듈. 정책 version/effective window, 공식 출처 provenance·확인일, 누진·계절·기본요금, 반올림과 명시적 미반영 항목을 소유(`docs/TARIFF_POLICY.md`) |
 
 ## 향후 production 방향
 
@@ -179,7 +179,7 @@ D1 local development는 Wrangler의 local simulation을 사용하며 remote data
 
 검침 의미: 21일 마감의 표시 기간은 전월 22일~당월 21일입니다. 설정은 1~31일 또는 별도 월말을 지원하며, 고정 일자가 없는 달에는 해당 월 마지막 날을 실제 마감일로 사용합니다. 경계값은 실제 경계 기록 → 전후 기록 보간 → 자료 부족 시 미산출 순서입니다. 최근 구간 소비 속도, 최근 일평균, 주기 평균, 마감 예상, 30일 환산은 서로 다른 값으로 유지합니다.
 
-이번 단계에 없는 기능: 실제 전기요금 계산, 실제 Google OAuth Client ID/SESSION_SECRET·Provider 로그인 E2E, 실제 owner/viewer 공유 초대·해제 관리 UI/API, production service worker·push·background sync·정식 production 배포.
+이번 단계에 없는 기능: 실제 청구액 수준의 전기요금 계산(현재는 기본요금·전력량요금 추정 소계까지만 반영), 실제 owner/viewer 공유 초대·해제 관리 UI/API, production service worker·push·background sync·정식 production 배포.
 
 ## Public 저장소
 

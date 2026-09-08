@@ -9,7 +9,7 @@
     "build": "npm run typecheck && vite build",
     "preview": "vite preview --host 127.0.0.1",
     "test:provisioning": "node --test provisioning-tests/remote-config.test.mjs provisioning-tests/auth-runtime-config.test.mjs",
-    "test:domain": "tsc -p tsconfig.domain-test.json && node --test domain-tests/usage.test.mjs domain-tests/dailyUsage.test.mjs domain-tests/billingCycle.test.mjs domain-tests/forecast.test.mjs",
+    "test:domain": "tsc -p tsconfig.domain-test.json && node --test domain-tests/usage.test.mjs domain-tests/dailyUsage.test.mjs domain-tests/billingCycle.test.mjs domain-tests/forecast.test.mjs domain-tests/tariff.test.mjs",
     "test:worker": "tsc -p tsconfig.worker-test.json && node --test worker-tests/api.test.mjs worker-tests/persistence.test.mjs worker-tests/auth.test.mjs worker-tests/resources.test.mjs",
     "test:ui": "playwright test",
     "test": "npm run test:provisioning && npm run test:domain && npm run test:worker && npm run test:ui"

@@ -3,6 +3,12 @@ import { getBillingCycleContext } from './domain/billingCycle';
 import { splitUsageIntervalByLocalDate } from './domain/dailyUsage';
 import { calculateUsageForecast, type UsageForecastSnapshot } from './domain/forecast';
 import { parseCumulativeKwhToWh, type MeterReadingPoint } from './domain/usage';
+import {
+  calculateTariffCost,
+  resolveTariffPolicyForCloseMonth,
+  TariffPolicyError,
+  TARIFF_POLICIES,
+} from './domain/tariff';
 import './style.css';
 import './live.css';
 
@@ -121,6 +127,25 @@ function forecastFor(meter: MeterResource): UsageForecastSnapshot | null {
   return readingPoints.length === 0 ? null : calculateUsageForecast(readingPoints, closeSetting(meter), meter.timezone, 7);
 }
 
+function tariffDisplay(closeYear: number, closeMonth: number, projectedUsageWh: number | null): { amount: string; note: string } | null {
+  let policy;
+  try {
+    policy = resolveTariffPolicyForCloseMonth(TARIFF_POLICIES, closeYear, closeMonth);
+  } catch (error) {
+    if (error instanceof TariffPolicyError) return null;
+    throw error;
+  }
+  const note = `요금은 ${policy.label} (확인일 ${policy.confirmedOn}) 기준 기본요금·전력량요금 추정 소계이며 ${policy.excludedComponents.join('·')} 등은 미반영입니다. 사용량과 예측은 저장된 원본 기록에서 다시 계산합니다.`;
+  if (projectedUsageWh === null) return { amount: '자료 부족', note };
+  try {
+    const cost = calculateTariffCost(TARIFF_POLICIES, { closeYear, closeMonth, usageWh: Math.round(projectedUsageWh) });
+    return { amount: `${cost.subtotalWon.toLocaleString('ko-KR')} 원`, note };
+  } catch (error) {
+    if (error instanceof TariffPolicyError) return { amount: '자료 부족', note };
+    throw error;
+  }
+}
+
 function shell(content: string, includeNav = false): string {
   return `<div class="shell">
     <header class="masthead"><a href="#home" class="brand" aria-label="전기 기록 홈"><span class="brand-mark" aria-hidden="true">↗</span> 전기 기록</a>${state.phase === 'ready' ? '<button id="logout-button" class="text-button" type="button">로그아웃</button>' : ''}</header>
@@ -199,6 +224,7 @@ function render(): void {
   });
   const comparison = currentCycle ? forecast?.comparison : null;
   const confidence = currentCycle ? forecast?.confidence : null;
+  const tariff = tariffDisplay(liveCycle.closeYear, liveCycle.closeMonth, currentCycle?.projectedCloseUsageWh ?? null);
 
   app.innerHTML = shell(`
     <section class="meter-toolbar" aria-label="현재 계량기"><label for="meter-select">계량기</label><select id="meter-select">${state.meters.map(item => `<option value="${escapeHtml(item.meterId)}"${item.meterId === meter.meterId ? ' selected' : ''}>${escapeHtml(item.name)} · ${item.role}</option>`).join('')}</select>${readonlyNote}</section>
@@ -212,7 +238,7 @@ function render(): void {
         <button id="record-button" class="primary" type="submit" disabled>${isOwner ? '기록하기' : '조회 전용'}</button>
       </form>
       <section class="interval" aria-labelledby="interval-title"><div class="section-heading"><h2 id="interval-title">직전 기록 이후</h2><span class="subtle">실제 기록 기준</span></div><p class="hero-number">${latestInterval ? `${latestInterval.usageKwh.toFixed(1)} <small>kWh</small>` : '자료 부족'}</p><dl class="interval-details"><div><dt>경과시간</dt><dd>${latestInterval ? formatHours(latestInterval.elapsedMs) : '자료 부족'}</dd></div><div><dt>평균 소비전력</dt><dd>${formatPower(latestInterval?.averagePowerW ?? null)}</dd></div></dl></section>
-      <section class="cycle-summary" aria-labelledby="cycle-title"><div class="section-heading"><h2 id="cycle-title">이번 검침주기</h2><span class="deadline">마감까지 약 ${Math.max(0, Math.ceil(liveContext.remainingMs / 86_400_000))}일</span></div><dl class="summary-list"><div><dt>최신 기록까지</dt><dd>${formatKwh(currentCycle?.usageToDateWh ?? null)}</dd></div><div><dt>최근 완전 일평균 · 최대 7일</dt><dd>${forecast?.recentDailyAverage ? `${forecast.recentDailyAverage.usageKwhPerDay.toFixed(1)} kWh/일` : '자료 부족'}</dd></div><div><dt>마감 예상 사용량</dt><dd>${formatKwh(currentCycle?.projectedCloseUsageWh ?? null)}</dd></div><div><dt>예상 전기요금</dt><dd>요금 정책 연결 전</dd></div></dl><p class="note">요금은 아직 계산하지 않습니다. 사용량과 예측은 저장된 원본 기록에서 다시 계산합니다.</p></section>
+      <section class="cycle-summary" aria-labelledby="cycle-title"><div class="section-heading"><h2 id="cycle-title">이번 검침주기</h2><span class="deadline">마감까지 약 ${Math.max(0, Math.ceil(liveContext.remainingMs / 86_400_000))}일</span></div><dl class="summary-list"><div><dt>최신 기록까지</dt><dd>${formatKwh(currentCycle?.usageToDateWh ?? null)}</dd></div><div><dt>최근 완전 일평균 · 최대 7일</dt><dd>${forecast?.recentDailyAverage ? `${forecast.recentDailyAverage.usageKwhPerDay.toFixed(1)} kWh/일` : '자료 부족'}</dd></div><div><dt>마감 예상 사용량</dt><dd>${formatKwh(currentCycle?.projectedCloseUsageWh ?? null)}</dd></div><div><dt>예상 전기요금</dt><dd>${tariff ? escapeHtml(tariff.amount) : '요금 정책 연결 전'}</dd></div></dl><p class="note">${tariff ? escapeHtml(tariff.note) : '요금은 아직 계산하지 않습니다. 사용량과 예측은 저장된 원본 기록에서 다시 계산합니다.'}</p></section>
     </section>
     <section id="records" class="screen" aria-labelledby="records-title" hidden><div class="page-heading"><p class="eyebrow">원본 기록</p><h1 id="records-title" tabindex="-1">기록</h1><p>${escapeHtml(meter.timezone)}</p></div>${readingRows.length ? `<ul class="reading-list">${readingRows.map(reading => `<li><span><time datetime="${new Date(reading.measuredAtMs).toISOString()}">${dateTime.format(reading.measuredAtMs)}</time><small>실제 측정</small></span><strong>${escapeHtml(formatCumulativeKwh(reading.cumulativeWh))}<small> kWh</small></strong></li>`).join('')}</ul>` : '<p class="empty-state">아직 기록이 없습니다.</p>'}</section>
     <section id="analysis" class="screen" aria-labelledby="analysis-title" hidden><div class="page-heading"><p class="eyebrow">저장된 기록으로 계산</p><h1 id="analysis-title" tabindex="-1">분석</h1></div><dl class="analysis-list"><div><dt>현재 검침주기 평균</dt><dd>${currentCycle?.averageDailyUsageKwh !== null && currentCycle?.averageDailyUsageKwh !== undefined ? `${currentCycle.averageDailyUsageKwh.toFixed(1)} kWh/일` : '자료 부족'}</dd></div><div class="forecast"><dt>검침 마감 예상</dt><dd>${formatKwh(currentCycle?.projectedCloseUsageWh ?? null)}</dd></div><div class="normalized"><dt>30일 환산</dt><dd>${formatKwh(currentCycle?.normalized30DayUsageWh ?? null)}</dd></div><div><dt>이전 주기 대비</dt><dd>${comparison ? `${comparison.projectedVsPreviousDeltaKwh >= 0 ? '+' : ''}${comparison.projectedVsPreviousDeltaKwh.toFixed(1)} kWh${comparison.projectedVsPreviousPercent === null ? '' : ` · ${comparison.projectedVsPreviousPercent.toFixed(1)}%`}` : '자료 부족'}</dd></div></dl>${confidence ? `<p class="note">관측 범위 ${(confidence.observationCoverageRatio * 100).toFixed(0)}% · 최근 완전 일자 ${confidence.recentFullDaysUsed}/${confidence.requestedRecentDays}일 · 시작 경계 ${confidence.startBoundaryProvenance ?? '자료 부족'}</p>` : '<p class="note">예측 신뢰도를 판단할 기록이 아직 부족합니다.</p>'}<section class="daily"><h2>일별 사용량</h2>${daily.length ? `<ul class="daily-list">${daily.map(day => `<li><span>${day.localDate.slice(5).replace('-', '/')}</span><strong>${(day.usageWh / 1000).toFixed(1)}<small> kWh</small></strong><span class="basis">${day.interpolated ? '추정·보간' : '경계 측정'}</span></li>`).join('')}</ul>` : '<p class="empty-state">일별 사용량을 계산할 구간이 없습니다.</p>'}</section></section>

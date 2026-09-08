@@ -184,6 +184,19 @@ test('owner quick entry persists through API, reloads raw readings, and recalcul
   await expect(page.locator('.reading-list li').first()).toContainText('7133.5');
 });
 
+test('home tariff estimate is derived from the bundled verified policy with explicit provenance', async ({ page }) => {
+  await installApiMock(page);
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: '우리집 전기' })).toBeVisible();
+  const tariffCell = page.locator('.summary-list div').filter({ hasText: '예상 전기요금' }).locator('dd');
+  await expect(tariffCell).toHaveText('123,913 원');
+  const note = page.locator('#home .note');
+  await expect(note).toContainText('2023-11-09 개정적용');
+  await expect(note).toContainText('확인일 2026-09-09');
+  await expect(note).toContainText('부가가치세');
+  await expect(note).toContainText('미반영');
+});
+
 test('owner can save day or month-end billing close while viewer remains read-only', async ({ page }) => {
   const control = await installApiMock(page);
   await page.goto('/#settings');

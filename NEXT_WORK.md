@@ -1,6 +1,6 @@
 # NEXT_WORK.md
 
-## 현재 완료: architecture / domain / Worker+D1 / Google session / authorized CRUD / live mobile UI baseline / canonical remote D1 provisioning / PWA installability shell / auth error boundary hardening
+## 현재 완료: architecture / domain / Worker+D1 / Google session / authorized CRUD / live mobile UI baseline / canonical remote D1 provisioning / PWA installability shell / auth error boundary hardening / verified tariff policy v1
 
 - [x] Vite + TypeScript + 기본 DOM/CSS, 런타임 프레임워크 없음
 - [x] Workers Static Assets 개발 preview 및 `work/*` 자동 preview 경로
@@ -29,8 +29,9 @@
 - [x] 최종용 Google Web Client + Authorized JavaScript origin 등록, 명시적 TTL(14일) + public auth vars 설정, outside SESSION_SECRET 주입 및 dev alias version 배포
 - [x] dev origin 실제 Google 로그인 → first user 자동 생성 → first meter 생성 → 실제 reading 저장 → reload 복원 E2E 검증 완료
 - [x] live app metadata + Web App Manifest + 192/512/maskable/apple-touch first-party PNG로 PWA installability repository contract 구성
+- [x] 공식 출처 provenance와 확인일을 갖는 주택용(저압) 2023-11-09 개정 전기요금 policy v1로 홈 예상 전기요금(기본요금·전력량요금 추정 소계) 표시
 
-현재 UI는 실제 repository API/domain 계약을 사용하며, canonical Cloudflare remote D1 및 Google Web Client / Cloudflare auth runtime이 연결되어 dev preview(`https://dev-electricity-meter-tracker.247dev.workers.dev`)에서 실제 로그인과 데이터 복원이 검증되었습니다. Google credential 검증 실패는 public 응답과 UI에 verifier/provider detail을 노출하지 않고 server diagnostic에만 남깁니다. PWA는 설치 가능한 app shell 계약까지만 포함하며 service worker, offline cache, offline write queue, Background Sync는 아직 추가하지 않습니다. repository 자동화 테스트에서는 deterministic mock과 local D1/workerd를 사용합니다.
+현재 UI는 실제 repository API/domain 계약을 사용하며, canonical Cloudflare remote D1 및 Google Web Client / Cloudflare auth runtime이 연결되어 dev preview(`https://dev-electricity-meter-tracker.247dev.workers.dev`)에서 실제 로그인과 데이터 복원이 검증되었습니다. Google credential 검증 실패는 public 응답과 UI에 verifier/provider detail을 노출하지 않고 server diagnostic에만 남깁니다. PWA는 설치 가능한 app shell 계약까지만 포함하며 service worker, offline cache, offline write queue, Background Sync는 아직 추가하지 않습니다. 전기요금은 주택용(저압) 2023-11-09 개정 policy(2026-09-09 공식 출처 확인) 기준 기본요금+전력량요금 추정 소계까지만 계산하며 연료비조정·기후환경·부가세·기금·복지할인 등 미반영 항목을 UI에 명시하고, policy가 커버하지 않는 마감 월과 계산 근거가 없는 경우 기존 미연결/자료 부족 표시를 유지합니다. repository 자동화 테스트에서는 deterministic mock과 local D1/workerd를 사용합니다.
 
 ## 완료 WorkUnit: 모바일 UI와 auth/API/domain 연결 baseline
 
@@ -106,9 +107,18 @@
 - Worker 테스트는 provider detail이 server diagnostic에는 남고 credential/public response에는 남지 않는 계약을 검증합니다.
 - Playwright는 서버가 상세 message를 반환하는 보수적 mock에서도 해당 detail이 UI에 노출되지 않는 방어 경계를 검증합니다.
 
+## 완료 WorkUnit: 주택용 전기요금 policy v1
+
+- `src/domain/tariff.ts`가 usage/billing/calendar를 import하지 않는 독립 policy 모듈로 policy version(effective window, 공식 출처 provenance, 저장소 확인일), 계절별 누진 구간, 기본요금, 전력량요금 계산과 registry 검증을 소유합니다.
+- v1 데이터는 2026-09-09에 한국전력 사이버지점 요금표와 찾기쉬운 생활법령정보에서 직접 확인한 주택용(저압) 2023-11-09 개정 수치(하계 300/450, 기타계절 200/400, 기본요금 910/1,600/7,300원, 전력량요금 120.0/214.6/307.3원/kWh)만 사용합니다.
+- 검증 근거가 부족한 연료비조정요금, 기후환경요금, 부가가치세, 전력산업기반기금, 복지할인(구 필수사용량보장공제), 1,000kWh 초과 누진할증, 동계 소용량 할인, TV수신료는 계산에 넣지 않고 `excludedComponents`로 명시하며 결과는 기본요금+전력량요금 추정 소계로만 표시합니다.
+- 홈 예상 전기요금은 마감 예상 사용량을 policy에 넣은 추정 소계와 provenance 문구(개정적용일, 확인일, 미반영 항목)를 표시하고, 미커버 마감 월은 기존 `요금 정책 연결 전`, 계산 근거가 없으면 `자료 부족`을 유지합니다.
+- `domain-tests/tariff.test.mjs`가 공식 표 기대값으로 구간 경계, 계절 차이, 반올림 half-up 경계, 미커버 월, invalid 입력, registry 위반을 검증하고 `tests/ui.spec.ts`가 고정 시각 mock에서 정확한 원 단위와 provenance 문구 렌더링을 검증합니다.
+- 계절은 검침 마감 월 기준 선택, 반올림은 전체 전력량요금 합에 1원 half-up 1회라는 v1 규칙과 실제 청구액 대조 한계를 `docs/TARIFF_POLICY.md`에 기록했습니다.
+
 ## 다음 1순위 후보
 
-- version/effective date와 공식 출처 provenance를 갖는 독립 전기요금 policy
-- 실제 owner/viewer 공유 초대/해제 UI와 관리 API
+- 실제 owner/viewer 공유 초대/해제 UI와 관리 API(초대 수단/데이터 모델 확정이 필요한 Discussion Gate)
+- 공식 확인 가능해지는 시점의 tariff policy v2 데이터(연료비조정·기후환경 단가, 1,000kWh 초과 누진할증 적용 계절, 동계 소용량 할인 확인 시 excludedComponents 해소)
 
 VERSION/tag/release/main 통합/정식 production 배포는 사용자 승인 없이 진행하지 않습니다.
