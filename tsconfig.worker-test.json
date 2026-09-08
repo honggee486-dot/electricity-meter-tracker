@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": ".worker-test",
+    "rootDir": "src",
+    "types": []
+  },
+  "include": ["src/worker.ts"]
+}

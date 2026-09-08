@@ -12,6 +12,7 @@ build/
 .cache/
 .wrangler/
 .domain-test/
+.worker-test/
 
 # Logs
 *.log

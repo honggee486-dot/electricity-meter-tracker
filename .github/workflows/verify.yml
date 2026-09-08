@@ -26,6 +26,8 @@ jobs:
         run: npm ci
       - name: Typecheck and build
         run: npm run build
+      - name: Worker API tests
+        run: npm run test:worker
       - name: Domain tests (UTC)
         run: npm run test:domain
         env:
