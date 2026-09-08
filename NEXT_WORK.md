@@ -25,9 +25,10 @@
 - [x] `.dev.vars` / `.env` 계열 Secret 파일 Git 제외
 - [x] build + persistence + local D1/workerd + Worker/auth/resource API + domain + Playwright GitHub Actions verify 경로 유지
 - [x] canonical Cloudflare D1 생성, root `DB` binding 기록, `0001_initial.sql` remote migration 적용 및 상태 확인
-- [x] Google auth runtime repository guard: 실제 Client ID/명시적 TTL public vars만 root config에 기록하고 `SESSION_SECRET`은 저장소 밖에 유지
+- [x] 최종용 Google Web Client + Authorized JavaScript origin 등록, 명시적 TTL(14일) + public auth vars 설정, outside SESSION_SECRET 주입 및 dev alias version 배포
+- [x] dev origin 실제 Google 로그인 → first user 자동 생성 → first meter 생성 → 실제 reading 저장 → reload 복원 E2E 검증 완료
 
-현재 UI는 실제 repository API/domain 계약을 사용합니다. canonical Cloudflare remote D1 database/binding/migration은 구성했으며, Google Client ID/SESSION_SECRET 환경값과 실제 Google Provider 로그인은 아직 구성하지 않았으므로 repository test에서는 deterministic mock과 local D1/workerd를 사용합니다.
+현재 UI는 실제 repository API/domain 계약을 사용하며, canonical Cloudflare remote D1 및 Google Web Client / Cloudflare auth runtime이 연결되어 dev preview(`https://dev-electricity-meter-tracker.247dev.workers.dev`)에서 실제 로그인과 데이터 복원이 검증되었습니다. repository 자동화 테스트에서는 deterministic mock과 local D1/workerd를 사용합니다.
 
 ## 완료 WorkUnit: 모바일 UI와 auth/API/domain 연결 baseline
 
@@ -74,21 +75,16 @@
 - helper는 잘못된 Client ID/TTL, 기존 다른 Client/TTL의 자동 덮어쓰기, root `SESSION_SECRET` 저장을 거부합니다.
 - `npm run test:provisioning`과 GitHub Actions가 D1 binding/local 격리와 auth runtime guard를 함께 보호합니다.
 
-## 다음 1순위: 최종용 Google Web Client + preview 실사용자 E2E
+## 완료 WorkUnit: 최종용 Google Web Client + dev preview 실사용자 E2E
 
-완료 조건:
+- 최종용 Google Web Client(`776785201029-mkh90fhobv7ltgu4nu0q15fsnr72qkp2.apps.googleusercontent.com`)를 생성하고 `https://dev-electricity-meter-tracker.247dev.workers.dev`를 Authorized JavaScript origin으로 등록했습니다.
+- 명시적 session TTL로 14일(`1209600`초)을 결정하고 root `wrangler.jsonc`의 public vars에 반영했습니다.
+- 최소 32바이트 이상의 암호학적으로 강력한 `SESSION_SECRET`을 repository 밖 Cloudflare runtime에 주입하고, `dev` preview alias로 새 Worker version을 업로드했습니다 (production traffic 불변).
+- Remote Google JWKS fetch 처리 및 에러 진단 개선을 통해 Google Provider 로그인 flow를 안정화했습니다.
+- 고정 dev origin에서 실제 Google 로그인 → first user 자동 생성 → first meter 생성 → 실제 reading 저장 → F5 새로고침 복원 → 로그아웃 후 보호 API 차단 → 동일 Google 계정 재로그인 시 기존 user/meter/reading 복원 전체 E2E DoD를 검증 완료했습니다.
+- canonical remote D1에는 synthetic fixture나 임의 dump를 넣지 않았으며, 실제 사용자 데이터 및 Secret/토큰을 저장소나 로그에 노출하지 않았습니다.
 
-1. 최종용 Google Web Client를 만들고 `https://dev-electricity-meter-tracker.247dev.workers.dev`를 Authorized JavaScript origin으로 등록합니다.
-2. session lifetime을 명시적으로 결정합니다. 저장소는 숨은 기본 TTL을 선택하지 않습니다.
-3. 실제 `GOOGLE_CLIENT_ID`와 선택한 TTL을 `node scripts/configure-auth-runtime.mjs --write <client-id> <ttl-seconds>`로 public runtime config에 반영합니다.
-4. 강한 `SESSION_SECRET`을 repository 밖 Cloudflare secret으로 주입합니다.
-5. 현재 dev alias에 auth runtime이 포함된 Worker version을 올리되 production deploy는 하지 않습니다.
-6. 실제 Google 로그인 → first user 생성 → first meter 생성 → reading 저장 → 새로고침 후 동일 raw reading/계산 복원까지 dev origin에서 검증합니다.
-7. 두 번째 테스트 사용자가 없다면 sharing 권한 검증을 억지로 포함하지 않습니다. 별도 사용자로 검증할 수 있을 때 owner/viewer 격리를 확인합니다.
-8. Secret, cookie, ID token, 실제 user row/reading을 commit/log에 노출하지 않습니다.
-9. 실제 사용자가 생긴 뒤에는 dev 검증 때문에 canonical DB를 임의 초기화하거나 fixture로 덮지 않습니다.
-
-## 그 이후 후보
+## 다음 1순위 후보
 
 - PWA installability; offline write/background sync는 실제 필요 확인 전 보류
 - version/effective date와 공식 출처 provenance를 갖는 독립 전기요금 policy

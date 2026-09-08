@@ -419,8 +419,10 @@ async function handleGoogleLogin(
   let identity: GoogleIdentity;
   try {
     identity = await verifyCredential(credential, config.googleClientId);
-  } catch {
-    return apiError(401, 'INVALID_GOOGLE_CREDENTIAL', 'Google credential could not be verified.');
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Google credential could not be verified.';
+    console.error('Google credential verification failed:', message);
+    return apiError(401, 'INVALID_GOOGLE_CREDENTIAL', `Google credential could not be verified: ${message}`);
   }
 
   const nowMs = (dependencies.nowMs ?? Date.now)();

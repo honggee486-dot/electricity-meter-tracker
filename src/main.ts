@@ -83,7 +83,12 @@ const friendlyError = (error: unknown): string => {
   if (error instanceof ApiError) {
     if (error.status === 409) return '같은 시각의 기록이 있거나 누적값 순서와 맞지 않습니다.';
     if (error.status === 403) return '이 작업은 계량기 소유자만 할 수 있습니다.';
-    if (error.status === 401) return '로그인이 만료되었습니다. 다시 로그인해 주세요.';
+    if (error.status === 401) {
+      if (error.code === 'INVALID_GOOGLE_CREDENTIAL') {
+        return `Google 로그인 검증 실패: ${error.message}`;
+      }
+      return '로그인이 만료되었습니다. 다시 로그인해 주세요.';
+    }
     if (error.status === 503) return '이 환경의 인증 또는 데이터 연결이 아직 준비되지 않았습니다.';
     return `요청을 처리하지 못했습니다. (${error.code})`;
   }

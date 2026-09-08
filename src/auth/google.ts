@@ -100,25 +100,31 @@ export class RemoteGoogleJwkProvider implements GoogleJwkProvider {
   private keys: GoogleRsaJwk[] = [];
   private expiresAtMs = 0;
 
-  constructor(private readonly fetcher: typeof fetch = fetch) {}
+  constructor(private readonly fetcher: typeof fetch = (...args) => globalThis.fetch(...args)) {}
 
   private async refresh(nowMs: number): Promise<void> {
     let response: Response;
     try {
       response = await this.fetcher(GOOGLE_JWKS_URL, {
-        headers: { accept: 'application/json' },
+        headers: {
+          accept: 'application/json',
+          'user-agent': 'electricity-meter-tracker',
+        },
       });
-    } catch {
-      throw new GoogleIdentityError('Google signing keys are unavailable.');
+    } catch (error) {
+      console.error('RemoteGoogleJwkProvider fetch error:', error);
+      throw new GoogleIdentityError(`Google signing keys are unavailable: ${error instanceof Error ? error.message : String(error)}`);
     }
     if (!response.ok) {
-      throw new GoogleIdentityError('Google signing keys are unavailable.');
+      console.error('RemoteGoogleJwkProvider response not ok:', response.status);
+      throw new GoogleIdentityError(`Google signing keys are unavailable: HTTP ${response.status}`);
     }
 
     let body: JwkSetResponse;
     try {
       body = (await response.json()) as JwkSetResponse;
-    } catch {
+    } catch (error) {
+      console.error('RemoteGoogleJwkProvider JSON parse error:', error);
       throw new GoogleIdentityError('Google signing keys are invalid.');
     }
 

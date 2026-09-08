@@ -16,6 +16,9 @@
       "database_id": "c295ee25-8a5c-4193-9889-3df4a246d6fb",
       "migrations_dir": "migrations"
     }
-  ]
-  // AUTH_RUNTIME_VARS_PLACEHOLDER
+  ],
+  "vars": {
+    "GOOGLE_CLIENT_ID": "776785201029-mkh90fhobv7ltgu4nu0q15fsnr72qkp2.apps.googleusercontent.com",
+    "SESSION_TTL_SECONDS": "1209600"
+  }
 }
