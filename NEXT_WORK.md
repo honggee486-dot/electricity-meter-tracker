@@ -1,6 +1,6 @@
 # NEXT_WORK.md
 
-## 현재 완료: architecture / domain / Worker+D1 / Google session / authorized CRUD / live mobile UI baseline / canonical remote D1 provisioning
+## 현재 완료: architecture / domain / Worker+D1 / Google session / authorized CRUD / live mobile UI baseline / canonical remote D1 provisioning / PWA installability shell
 
 - [x] Vite + TypeScript + 기본 DOM/CSS, 런타임 프레임워크 없음
 - [x] Workers Static Assets 개발 preview 및 `work/*` 자동 preview 경로
@@ -27,8 +27,9 @@
 - [x] canonical Cloudflare D1 생성, root `DB` binding 기록, `0001_initial.sql` remote migration 적용 및 상태 확인
 - [x] 최종용 Google Web Client + Authorized JavaScript origin 등록, 명시적 TTL(14일) + public auth vars 설정, outside SESSION_SECRET 주입 및 dev alias version 배포
 - [x] dev origin 실제 Google 로그인 → first user 자동 생성 → first meter 생성 → 실제 reading 저장 → reload 복원 E2E 검증 완료
+- [x] live app metadata + Web App Manifest + 192/512/maskable/apple-touch first-party PNG로 PWA installability repository contract 구성
 
-현재 UI는 실제 repository API/domain 계약을 사용하며, canonical Cloudflare remote D1 및 Google Web Client / Cloudflare auth runtime이 연결되어 dev preview(`https://dev-electricity-meter-tracker.247dev.workers.dev`)에서 실제 로그인과 데이터 복원이 검증되었습니다. repository 자동화 테스트에서는 deterministic mock과 local D1/workerd를 사용합니다.
+현재 UI는 실제 repository API/domain 계약을 사용하며, canonical Cloudflare remote D1 및 Google Web Client / Cloudflare auth runtime이 연결되어 dev preview(`https://dev-electricity-meter-tracker.247dev.workers.dev`)에서 실제 로그인과 데이터 복원이 검증되었습니다. PWA는 설치 가능한 app shell 계약까지만 포함하며 service worker, offline cache, offline write queue, Background Sync는 아직 추가하지 않습니다. repository 자동화 테스트에서는 deterministic mock과 local D1/workerd를 사용합니다.
 
 ## 완료 WorkUnit: 모바일 UI와 auth/API/domain 연결 baseline
 
@@ -40,11 +41,11 @@
 4. 로그인 사용자는 접근 가능한 owner/viewer meter만 선택합니다. owner는 기록·설정 mutation이 가능하고 viewer는 조회 전용입니다. 권한의 정본은 계속 서버/API입니다.
 5. meter가 없는 첫 사용자는 이름, IANA timezone, 검침 마감만 입력해 meter를 생성합니다. owner identity와 resource ID는 client body에서 받지 않습니다.
 6. owner 홈 빠른 입력은 현재 `Date.now()`와 decimal kWh를 reading API에 저장하고 성공 뒤 meter/readings를 다시 조회합니다. localStorage/offline write queue는 추가하지 않았습니다.
-7. 최신 구간, 최근 완전 일자 평균, 현재 검침주기, 마감 예상, 30일 환산, 이전 주기 비교, 일별 보간은 기존 순수 domain을 재사용합니다. 최신 raw reading이 오늘의 검침주기에 속하지 않으면 과거 cycle forecast를 현재 cycle 값처럼 표시하지 않습니다.
+7. 최신 구간, 최근 완전 일자 평균, 현재 검침주기 평균, 마감 예상, 30일 환산, 이전 주기 비교, 일별 보간은 기존 순수 domain을 재사용합니다. 최신 raw reading이 오늘의 검침주기에 속하지 않으면 과거 cycle forecast를 현재 cycle 값처럼 표시하지 않습니다.
 8. 검침 마감 UI는 `1..31` 또는 별도 `월말`입니다. 29~31일 고정값이 없는 달에는 domain이 그 달 실제 마지막 날을 사용하고, `월말`은 매달 실제 마지막 날을 사용합니다.
 9. 전기요금은 아직 정책 모듈이 없으므로 실제/샘플 금액을 표시하지 않습니다.
 10. Playwright는 API와 GIS를 deterministic하게 mock해 auth 미설정/signed-out 로그인, owner quick write+reload, viewer read-only, 첫 meter 생성, API 실패, 월말 설정, 모바일 폭과 keyboard 흐름을 보호합니다.
-11. 실제 Provider credential, production secret, 실사용자 데이터, sharing invitation, PWA/offline write, tariff는 이 baseline에 포함하지 않았습니다.
+11. 실제 Provider credential, production secret, 실사용자 데이터, sharing invitation, offline write/background sync, tariff는 이 baseline에 포함하지 않았습니다.
 
 ## 확정 운영 방향: 처음 만든 remote resource를 최종본까지 사용
 
@@ -84,9 +85,20 @@
 - 고정 dev origin에서 실제 Google 로그인 → first user 자동 생성 → first meter 생성 → 실제 reading 저장 → F5 새로고침 복원 → 로그아웃 후 보호 API 차단 → 동일 Google 계정 재로그인 시 기존 user/meter/reading 복원 전체 E2E DoD를 검증 완료했습니다.
 - canonical remote D1에는 synthetic fixture나 임의 dump를 넣지 않았으며, 실제 사용자 데이터 및 Secret/토큰을 저장소나 로그에 노출하지 않았습니다.
 
+## 완료 WorkUnit: PWA installability repository contract
+
+- `index.html`의 과거 UI demo/sample metadata를 live product 문구로 교체하고 manifest/apple-touch-icon 연결을 추가했습니다.
+- `public/manifest.webmanifest`는 root app identity, root `start_url`/`scope`, `standalone` display, theme/background와 일반 192/512 + maskable 512 아이콘을 명시합니다.
+- `public/icons/`에는 외부 asset 없이 직접 생성한 PNG만 사용하며 iOS용 180 apple-touch-icon을 별도로 둡니다.
+- `tests/pwa.spec.ts`는 built preview에서 manifest 선언, icon 응답/PNG signature/실제 pixel dimension, stale demo metadata 제거를 검증합니다.
+- installability만 추가했으며 service worker/offline cache/offline write queue/Background Sync는 제품 요구가 확인되기 전까지 보류합니다.
+- 특정 OS/browser의 실제 install promotion/standalone 실행은 repository test만으로 단정하지 않고 필요 시 해당 runtime에서 별도 검증합니다.
+
+자세한 범위와 검증 경계는 `docs/PWA_INSTALLABILITY.md`를 따릅니다.
+
 ## 다음 1순위 후보
 
-- PWA installability; offline write/background sync는 실제 필요 확인 전 보류
+- Google credential 검증 실패의 상세 runtime 진단은 server log에만 남기고 public API/UI에는 일반화된 오류만 노출하도록 auth error boundary hardening
 - version/effective date와 공식 출처 provenance를 갖는 독립 전기요금 policy
 - 실제 owner/viewer 공유 초대/해제 UI와 관리 API
 

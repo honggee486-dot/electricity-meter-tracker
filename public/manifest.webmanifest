@@ -1,0 +1,33 @@
+{
+  "id": "/",
+  "name": "전기 기록",
+  "short_name": "전기 기록",
+  "description": "전기 계량기 누적 수치를 빠르게 기록하고 검침주기 사용량과 추세를 확인합니다.",
+  "lang": "ko",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f6f5ef",
+  "theme_color": "#f6f5ef",
+  "prefer_related_applications": false,
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}
