@@ -243,6 +243,7 @@ test('live UI keeps navigation, keyboard focus, timezone rendering, and narrow v
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('/');
+  await expect(page.getByRole('heading', { name: '우리집 전기' })).toBeVisible();
   const brand = page.getByRole('link', { name: '전기 기록 홈' });
   await brand.focus();
   await expect(brand).toBeFocused();
