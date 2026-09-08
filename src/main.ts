@@ -6,8 +6,11 @@ import { parseCumulativeKwhToWh, type MeterReadingPoint } from './domain/usage';
 import {
   calculateTariffCost,
   resolveTariffPolicyForCloseMonth,
+  tariffCoverageForCloseMonth,
   TariffPolicyError,
   TARIFF_POLICIES,
+  type TariffCostResult,
+  type TariffPolicyVersion,
 } from './domain/tariff';
 import './style.css';
 import './live.css';
@@ -127,6 +130,36 @@ function forecastFor(meter: MeterResource): UsageForecastSnapshot | null {
   return readingPoints.length === 0 ? null : calculateUsageForecast(readingPoints, closeSetting(meter), meter.timezone, 7);
 }
 
+interface TariffFuelWindowLike {
+  rateTenthWonPerKwh: number | null;
+  appliesFromCloseMonth: string;
+  appliesToCloseMonth: string | null;
+}
+
+function tariffFuelWindowText(fuel: TariffFuelWindowLike): string {
+  const rateTenthWon = fuel.rateTenthWonPerKwh ?? 0;
+  const sign = rateTenthWon > 0 ? '+' : '';
+  const rate = `${sign}${(rateTenthWon / 10).toFixed(1)}원/kWh`;
+  const window = fuel.appliesToCloseMonth === null
+    ? `${fuel.appliesFromCloseMonth}부터`
+    : `${fuel.appliesFromCloseMonth}~${fuel.appliesToCloseMonth}`;
+  return `연료비조정요금은 ${window} 고지 단가 ${rate}를 적용합니다.`;
+}
+
+function tariffNote(
+  policy: TariffPolicyVersion,
+  includedComponentLabels: readonly string[],
+  excludedComponents: readonly string[],
+  fuelAdjustment: TariffFuelWindowLike | null,
+): string {
+  const included = ['기본요금', '전력량요금', ...includedComponentLabels].join('·');
+  const parts = [`요금은 ${policy.label} (확인일 ${policy.confirmedOn}) 기준으로 ${included} 항목을 더한 예상 전기요금입니다.`];
+  if (fuelAdjustment) parts.push(tariffFuelWindowText(fuelAdjustment));
+  if (excludedComponents.length) parts.push(`${excludedComponents.join('·')} 항목은 미반영입니다.`);
+  parts.push('사용량과 예측은 저장된 원본 기록에서 다시 계산합니다.');
+  return parts.join(' ');
+}
+
 function tariffDisplay(closeYear: number, closeMonth: number, projectedUsageWh: number | null): { amount: string; note: string } | null {
   let policy;
   try {
@@ -135,15 +168,26 @@ function tariffDisplay(closeYear: number, closeMonth: number, projectedUsageWh: 
     if (error instanceof TariffPolicyError) return null;
     throw error;
   }
-  const note = `요금은 ${policy.label} (확인일 ${policy.confirmedOn}) 기준 기본요금·전력량요금 추정 소계이며 ${policy.excludedComponents.join('·')} 등은 미반영입니다. 사용량과 예측은 저장된 원본 기록에서 다시 계산합니다.`;
-  if (projectedUsageWh === null) return { amount: '자료 부족', note };
-  try {
-    const cost = calculateTariffCost(TARIFF_POLICIES, { closeYear, closeMonth, usageWh: Math.round(projectedUsageWh) });
-    return { amount: `${cost.subtotalWon.toLocaleString('ko-KR')} 원`, note };
-  } catch (error) {
-    if (error instanceof TariffPolicyError) return { amount: '자료 부족', note };
-    throw error;
+  let cost: TariffCostResult | null = null;
+  if (projectedUsageWh !== null) {
+    try {
+      cost = calculateTariffCost(TARIFF_POLICIES, { closeYear, closeMonth, usageWh: Math.round(projectedUsageWh) });
+    } catch (error) {
+      if (!(error instanceof TariffPolicyError)) throw error;
+    }
   }
+  if (cost) {
+    const fuel = cost.appliedComponents.find(component => component.componentId === 'fuelAdjustment') ?? null;
+    return {
+      amount: `${cost.estimatedTotalWon.toLocaleString('ko-KR')} 원`,
+      note: tariffNote(policy, cost.appliedComponents.map(component => component.label), cost.excludedComponents, fuel),
+    };
+  }
+  const coverage = tariffCoverageForCloseMonth(closeYear, closeMonth);
+  return {
+    amount: '자료 부족',
+    note: tariffNote(policy, coverage.includedComponentLabels, [...policy.excludedComponents, ...coverage.uncoveredComponentLabels], coverage.fuelAdjustment),
+  };
 }
 
 function shell(content: string, includeNav = false): string {

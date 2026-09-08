@@ -189,10 +189,13 @@ test('home tariff estimate is derived from the bundled verified policy with expl
   await page.goto('/');
   await expect(page.getByRole('heading', { name: '우리집 전기' })).toBeVisible();
   const tariffCell = page.locator('.summary-list div').filter({ hasText: '예상 전기요금' }).locator('dd');
-  await expect(tariffCell).toHaveText('123,913 원');
+  await expect(tariffCell).toHaveText('148,500 원');
   const note = page.locator('#home .note');
   await expect(note).toContainText('2023-11-09 개정적용');
   await expect(note).toContainText('확인일 2026-09-09');
+  await expect(note).toContainText('예상 전기요금');
+  await expect(note).toContainText('기후환경요금');
+  await expect(note).toContainText('연료비조정요금은 2026-07~2026-09 고지 단가 +5.0원/kWh를 적용합니다');
   await expect(note).toContainText('부가가치세');
   await expect(note).toContainText('미반영');
 });

@@ -12,9 +12,9 @@
 - 홈의 빠른 입력은 현재 시각 + 누적 kWh를 raw reading API에 저장한 뒤 최신 raw readings를 다시 읽습니다. localStorage, offline write queue, 파생값 DB 저장은 없습니다.
 - 홈 / 기록 / 분석 / 설정 하단 탐색을 유지하며 실제 raw reading을 usage/daily/billing/forecast domain에 넣어 구간 사용량·소비전력·최근 일평균·검침주기·마감 예상·30일 환산을 계산합니다.
 - owner 설정은 검침 마감 `1~31일 + 월말`을 지원합니다. 29~31일 고정값이 없는 달은 그 달 실제 월말로 자동 보정하며 `월말`은 항상 매달 마지막 날입니다.
-- 홈 예상 전기요금은 `src/domain/tariff.ts`의 주택용(저압) 2023-11-09 개정 policy(2026-09-09 공식 출처 확인)로 기본요금·전력량요금 추정 소계만 계산합니다. 연료비조정·기후환경요금·부가세·기금·복지할인 등은 policy 데이터의 `excludedComponents`로 명시하고 실제 청구액처럼 표시하지 않습니다. policy가 커버하지 않는 마감 월은 요금 정책 미연결 표시를 유지합니다. 자세한 provenance와 계산 규칙은 `docs/TARIFF_POLICY.md`를 따릅니다.
+- 홈 예상 전기요금은 `src/domain/tariff.ts`의 주택용(저압) 2023-11-09 개정 policy(2026-09-09 공식 출처 확인)로 기본요금·전력량요금·기후환경요금·연료비조정요금(분기 고지 window)·부가가치세(원단위 4사5입)·전력산업기반기금(10원 절사, 요율 window)·월간 최저요금을 더한 예상 합계(10원 미만 절사)를 계산하고, 여름철·겨울철 1,000kWh 초과분에는 슈퍼유저요금 736.2원/kWh를 적용합니다. 복지할인과 TV수신료, 공식 고지가 없는 분기의 연료비조정요금은 미반영 항목으로 명시하고 실제 청구액처럼 표시하지 않습니다. policy가 커버하지 않는 마감 월은 요금 정책 미연결 표시를 유지합니다. 자세한 provenance와 계산 규칙은 `docs/TARIFF_POLICY.md`를 따릅니다.
 - `src/api.ts`는 frontend same-origin HTTP 경계를 소유하고 SQL/D1 세부를 알지 않습니다.
-- `src/domain/usage.ts`는 누적값 정규화와 절대 instant 구간 계산을, `src/domain/calendar.ts`는 IANA timezone 기반 calendar 경계를, `src/domain/dailyUsage.ts`는 일자별 분할을, `src/domain/billingCycle.ts`는 검침 마감 설정·주기·경계 보간을, `src/domain/forecast.ts`는 최근/주기 평균·마감 예상·30일 환산·이전 주기 비교와 신뢰도 evidence를, `src/domain/tariff.ts`는 usage와 분리된 전기요금 policy(version/effective window, 공식 출처 provenance·확인일, 누진·계절·기본요금, 반올림과 명시적 미반영 항목)를 소유합니다.
+- `src/domain/usage.ts`는 누적값 정규화와 절대 instant 구간 계산을, `src/domain/calendar.ts`는 IANA timezone 기반 calendar 경계를, `src/domain/dailyUsage.ts`는 일자별 분할을, `src/domain/billingCycle.ts`는 검침 마감 설정·주기·경계 보간을, `src/domain/forecast.ts`는 최근/주기 평균·마감 예상·30일 환산·이전 주기 비교와 신뢰도 evidence를, `src/domain/tariff.ts`는 usage와 분리된 전기요금 policy(version/effective window, 공식 출처 provenance·확인일, 누진·계절·기본요금, 기후환경·연료비·부가세·기금·최저요금·슈퍼유저요금, 반올림과 명시적 미반영 항목)를 소유합니다.
 - `src/persistence/d1.ts`는 D1-compatible prepared query와 DB row 검증 경계를 소유합니다. Google subject/internal user, owner/viewer access lookup, meter/readings CRUD와 reading 이웃 조회를 담당합니다.
 - `src/auth/google.ts`는 Google GIS ID token의 RS256/JWK 서명과 issuer/audience/expiry/subject를 검증하고, `src/auth/session.ts`는 Web Crypto HMAC으로 `__Host-em_session` cookie를 서명·검증합니다.
 - `src/worker.ts`는 동일-origin API request owner입니다. health/auth baseline과 `/api/meters*` product API를 제공하며 모든 meter/readings route에서 내부 session과 owner/viewer 권한을 서버에서 강제합니다. local D1/auth 검증 probe는 명시적 local gate가 없으면 404입니다.
@@ -151,7 +151,7 @@ npm run test:ui
 | `migrations/` | D1 schema/migration source. 현재는 users/meters/viewer grants/raw readings와 DB-level integrity/index 계약만 소유 |
 | `wrangler.local.jsonc`, `persistence-tests/local_fixture.sql`, `persistence-tests/local_runtime_check.sh` | local D1/workerd integration evidence 전용. remote resource/config의 source가 아님 |
 | `scripts/configure-canonical-d1.mjs`, `scripts/configure-auth-runtime.mjs` | 실제로 확인된 canonical remote identity/public auth vars만 root config에 기록하는 provisioning guard. Secret이나 remote mutation 자체를 소유하지 않음 |
-| `src/domain/tariff.ts` | usage와 별도 tariff policy 모듈. 정책 version/effective window, 공식 출처 provenance·확인일, 누진·계절·기본요금, 반올림과 명시적 미반영 항목을 소유(`docs/TARIFF_POLICY.md`) |
+| `src/domain/tariff.ts` | usage와 별도 tariff policy 모듈. 정책 version/effective window, 공식 출처 provenance·확인일, 누진·계절·기본요금, 기후환경·연료비(window)·부가세·기금·최저요금·슈퍼유저요금, 반올림과 명시적 미반영 항목을 소유(`docs/TARIFF_POLICY.md`) |
 
 ## 향후 production 방향
 
