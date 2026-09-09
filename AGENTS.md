@@ -45,8 +45,24 @@
 * 검침 경계 보간
 * 예측
 * 전기요금
+* 가스요금
 
 전기요금 policy와 순수 사용량 domain은 분리한다.
+가스요금 policy도 순수 사용량 domain 및 전기요금 policy와 분리한다.
+
+## 전기 / 가스 확장
+
+* 사용자-facing 상위 utility 명칭은 `전기`, `가스`를 사용한다.
+* meter 종류는 실제 구현 시 `electricity | gas`로 명시하고, 기존 meter는 migration에서 `electricity`로 보존한다.
+* meter 종류는 누적값 단위 의미를 소유하므로 생성 후 in-place 변경할 수 있게 하지 않는다.
+* 원본 누적값은 floating point로 저장하지 않는다. 전기는 kWh 표시값, 가스는 m³ 표시값을 정확한 fixed-point 정수로 보존한다.
+* 현재 `cumulative_wh`/`cumulativeKwh` 같은 전기 전용 이름에 가스 값을 억지로 넣지 않는다. gas 지원 시 versioned D1 migration과 API/domain 정합화를 함께 수행한다.
+* 누적값 증가, elapsed time, 날짜 경계 보간, 검침주기, forecast처럼 실제로 단위와 무관한 계산만 공통화한다.
+* 평균 소비전력 W/kW와 전기 tariff는 전기 전용이다. 가스는 m³, m³/h와 별도 gas tariff를 사용한다.
+* 가스 원본 계량값만으로 최종 사용처를 분리해 해석하지 않는다.
+* 가스 사용량/forecast는 tariff가 없어도 동작해야 한다. 예상 가스요금은 공급사/지역/effective window/공식 provenance가 확인된 범위에서만 계산한다.
+* 가스 공급사 계정번호나 상세 주소 같은 개인정보는 실제 기능에 필수임이 확인되기 전 수집하지 않는다.
+* 세부 확장 계약은 `docs/GAS_METER_DIRECTION.md`를 따른다.
 
 ## 시간
 

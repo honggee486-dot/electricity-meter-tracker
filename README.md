@@ -1,11 +1,12 @@
 # electricity-meter-tracker
 
-전기 계량기 누적값을 임의 시점에 빠르게 기록하는 모바일 중심 웹앱.
+현재는 전기 계량기 누적값을 임의 시점에 빠르게 기록하는 모바일 중심 웹앱이며, 다음 제품 확장으로 같은 앱에서 `전기 / 가스` 계량기를 전환해 기록하는 방향을 채택했습니다. 현재 runtime은 전기만 지원합니다.
 
 ## 현재 상태
 
 **Architecture baseline + live mobile UI + 순수 usage/calendar/검침주기/forecast domain + Worker API + D1 persistence/runtime + Google identity/session + server-side owner/viewer meter/readings CRUD + canonical remote D1 baseline** 단계입니다. UI는 더 이상 `src/demo.ts`의 고정 SAMPLE을 정본으로 사용하지 않고 same-origin API의 raw meter/readings와 기존 순수 domain 계산을 사용합니다.
 
+- 다음 제품 확장은 상위 `[전기] [가스]` utility switch이며, 기존 전기 meter/readings는 그대로 보존합니다. 현재 `Wh/kWh` 전용 schema/API/domain에 가스 값을 억지로 넣지 않고 versioned D1 migration과 unit-neutral raw counter contract를 먼저 만듭니다. 세부 계약은 `docs/GAS_METER_DIRECTION.md`를 따릅니다.
 - 인증 환경 미설정 / signed-out / signed-in / loading / API error를 구분하며 Google Client ID가 실제 환경에 있을 때만 GIS 로그인 버튼을 로드합니다.
 - 로그인 사용자는 접근 가능한 owner/viewer meter만 선택합니다. owner는 기록·설정 mutation이 가능하고 viewer는 조회 전용이며 최종 권한 판정은 계속 서버/API에서 강제합니다.
 - 첫 사용자는 계량기 이름, IANA timezone, 검침 마감만 입력해 첫 meter를 만들 수 있습니다. owner identity와 resource ID는 client body에서 받지 않습니다.
@@ -59,7 +60,7 @@ npm run test:ui
 
 ## 첫 usage domain 계약
 
-현재 첫 계산 계약은 persistence/API public contract를 미리 고정하지 않는 내부 baseline입니다.
+현재 첫 계산 계약은 persistence/API public contract를 미리 고정하지 않는 내부 baseline이며, **현재 전기 runtime의 단위 계약**입니다. 가스 확장에서는 이 Wh/kWh 필드에 다른 단위를 넣지 않고 `docs/GAS_METER_DIRECTION.md`의 migration 순서를 따릅니다.
 
 - 누적 계량값 입력은 부호 없는 decimal **kWh 문자열**로 받으며 최대 소수 3자리(1 Wh)까지 정확히 정수 Wh로 변환합니다.
 - `0.1 + 0.2` 같은 부동소수점 오차가 누적값 차감에 들어오지 않도록 누적값과 구간 사용량의 기준 단위는 정수 Wh입니다.
@@ -94,6 +95,8 @@ npm run test:ui
 - `wrangler.local.jsonc`의 D1 ID와 fixture는 local-only test material입니다. 실제 remote D1 resource ID나 사용자 데이터가 아닙니다.
 - root `wrangler.jsonc`의 `DB`는 최종 운영본까지 유지할 canonical remote D1을 가리킵니다. remote schema는 versioned migration으로만 변경하고 synthetic fixture를 적용하지 않습니다.
 
+현재 schema의 `cumulative_wh`는 전기 전용 의미이므로 가스 지원 전에 versioned migration으로 neutral fixed-point raw reading 의미로 이동합니다. 기존 전기 값은 산술 변환 없이 보존하는 방향을 우선합니다.
+
 ## Google identity/session baseline
 
 - 로그인 공급자는 Google Identity Services만 대상으로 합니다. 자체 이메일/비밀번호 회원가입은 없습니다.
@@ -122,6 +125,8 @@ npm run test:ui
 - 같은 meter의 exact measured instant 중복과 직전/다음 reading 기준 누적값 역행은 409로 거부합니다. 동일 누적값은 0 Wh 구간으로 허용하는 기존 domain 계약을 유지합니다.
 - 파생 usage/daily/billing/forecast 값은 mutation API에서 DB에 중복 저장하지 않습니다.
 
+이 API 필드명은 현재 전기 runtime 기준이다. gas 지원 WorkUnit에서는 meter의 immutable utility kind가 단위 owner가 되도록 neutral raw reading contract로 frontend/Worker를 함께 migration한다.
+
 ## 최소 frontend 결정
 
 | 후보 | 현재 요구와의 판단 |
@@ -136,10 +141,10 @@ npm run test:ui
 
 | Owner | 현재 / 향후 책임 |
 | --- | --- |
-| `src/main.ts`, `src/style.css`, `src/live.css` | auth 상태, 현재 화면 렌더링, 빠른 입력, owner/viewer 표시, 실제 domain 결과와 meter 설정 UI |
+| `src/main.ts`, `src/style.css`, `src/live.css` | auth 상태, 현재 화면 렌더링, 빠른 입력, owner/viewer 표시, 실제 domain 결과와 meter 설정 UI. gas 구현 시 상위 utility switch와 utility별 단위 표시를 추가 |
 | `src/api.ts` | frontend same-origin `/api` HTTP 경계. SQL/D1 binding을 알지 않음 |
 | `src/demo.ts` | 이전 prototype SAMPLE fixture. live UI에서는 import하지 않으며 실제 domain/API 결과로 취급하지 않음 |
-| `src/domain/usage.ts` | DOM, Worker, DB에 의존하지 않는 누적값 정규화, 절대 instant reading, 구간 사용량·경과시간·평균 소비전력 |
+| `src/domain/usage.ts` | 현재 전기 runtime의 누적값 정규화, 절대 instant reading, 구간 사용량·경과시간·평균 소비전력. gas 확장 시 공통 counter primitive와 electricity-specific adapter 경계를 분리 |
 | `src/domain/calendar.ts` | IANA timezone 기준 local-date 변환, 월 길이, local midnight instant 등 공용 calendar primitive |
 | `src/domain/dailyUsage.ts` | 계량기 timezone 기준 날짜 경계 분할/보간, `actual / interpolated` provenance |
 | `src/domain/billingCycle.ts` | 1~31일/월말 검침 설정, 실제 마감일 보정, 이전/현재/다음 주기, 경계 actual 우선/보간, 주기 사용량 |
@@ -151,18 +156,19 @@ npm run test:ui
 | `migrations/` | D1 schema/migration source. 현재는 users/meters/viewer grants/raw readings와 DB-level integrity/index 계약만 소유 |
 | `wrangler.local.jsonc`, `persistence-tests/local_fixture.sql`, `persistence-tests/local_runtime_check.sh` | local D1/workerd integration evidence 전용. remote resource/config의 source가 아님 |
 | `scripts/configure-canonical-d1.mjs`, `scripts/configure-auth-runtime.mjs` | 실제로 확인된 canonical remote identity/public auth vars만 root config에 기록하는 provisioning guard. Secret이나 remote mutation 자체를 소유하지 않음 |
-| `src/domain/tariff.ts` | usage와 별도 tariff policy 모듈. 정책 version/effective window, 공식 출처 provenance·확인일, 누진·계절·기본요금, 기후환경·연료비(window)·부가세·기금·최저요금·슈퍼유저요금, 반올림과 명시적 미반영 항목을 소유(`docs/TARIFF_POLICY.md`) |
+| `src/domain/tariff.ts` | usage와 별도 전기 tariff policy 모듈. 정책 version/effective window, 공식 출처 provenance·확인일, 누진·계절·기본요금, 기후환경·연료비(window)·부가세·기금·최저요금·슈퍼유저요금, 반올림과 명시적 미반영 항목을 소유(`docs/TARIFF_POLICY.md`) |
+| `docs/GAS_METER_DIRECTION.md` | 전기/가스 utility 확장의 제품 명칭, D1/API migration, 공통 counter/domain 경계, gas tariff/provider provenance와 구현 순서 계약 |
 
 ## 향후 production 방향
 
 ```text
-Frontend / 향후 PWA
+Frontend / PWA
   → Cloudflare Workers Static Assets
   → 동일 origin의 Worker /api 경계
   → canonical D1
 ```
 
-root `wrangler.jsonc`는 `./dist` Static Assets와 `src/worker.ts` module entry를 함께 배포하고 `/api/*`만 Worker-first로 라우팅합니다. 정적 asset 요청은 기본 asset-first 경로를 유지합니다. **canonical D1 database/binding/migration은 구성됐고 Google auth runtime 값과 실제 Provider 로그인은 아직 없습니다.** `wrangler.local.jsonc`는 local simulation 전용이며 canonical remote resource를 대체하지 않습니다. Workers Builds Git 연동과 non-production preview는 사용하지만 정식 production 릴리스는 아직 하지 않았습니다.
+root `wrangler.jsonc`는 `./dist` Static Assets와 `src/worker.ts` module entry를 함께 배포하고 `/api/*`만 Worker-first로 라우팅합니다. 정적 asset 요청은 기본 asset-first 경로를 유지합니다. **canonical D1 database/binding/migration과 최종용 Google auth runtime이 구성됐고 dev preview에서 실제 Google Provider 로그인·first user/meter·reading 저장·재로그인 복원 E2E까지 검증됐습니다.** `wrangler.local.jsonc`는 local simulation 전용이며 canonical remote resource를 대체하지 않습니다. Workers Builds Git 연동과 non-production preview는 사용하지만 정식 production 릴리스는 아직 하지 않았습니다.
 
 2026-09-08 Cloudflare 공식 문서 확인 기준 Workers Free는 Worker 실행 요청 100,000회/일, HTTP 요청당 CPU 10 ms이고 Static Assets 요청은 무료·무제한입니다. Static Assets는 Free에서 Worker version당 20,000 files, 개별 파일 25 MiB 제한입니다.
 
@@ -179,7 +185,7 @@ D1 local development는 Wrangler의 local simulation을 사용하며 remote data
 
 검침 의미: 21일 마감의 표시 기간은 전월 22일~당월 21일입니다. 설정은 1~31일 또는 별도 월말을 지원하며, 고정 일자가 없는 달에는 해당 월 마지막 날을 실제 마감일로 사용합니다. 경계값은 실제 경계 기록 → 전후 기록 보간 → 자료 부족 시 미산출 순서입니다. 최근 구간 소비 속도, 최근 일평균, 주기 평균, 마감 예상, 30일 환산은 서로 다른 값으로 유지합니다.
 
-이번 단계에 없는 기능: 실제 청구액 수준의 전기요금 계산(현재는 기본요금·전력량요금 추정 소계까지만 반영), 실제 owner/viewer 공유 초대·해제 관리 UI/API, production service worker·push·background sync·정식 production 배포.
+현재 없는 주요 기능: 실제 `전기 / 가스` runtime과 gas tariff/provider policy, 실제 owner/viewer 공유 초대·해제 관리 UI/API, 복지할인 자격 기반 optional policy, production service worker·push·background sync·정식 production 배포.
 
 ## Public 저장소
 

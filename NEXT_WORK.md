@@ -31,8 +31,9 @@
 - [x] live app metadata + Web App Manifest + 192/512/maskable/apple-touch first-party PNG로 PWA installability repository contract 구성
 - [x] 공식 출처 provenance와 확인일을 갖는 주택용(저압) 2023-11-09 개정 전기요금 policy v1로 홈 예상 전기요금(기본요금·전력량요금 추정 소계) 표시
 - [x] tariff policy v2: 기후환경요금·연료비조정요금(분기 window)·부가가치세(원단위 4사5입)·전력산업기반기금(10원 절사, 요율 window)·슈퍼유저요금(여름/겨울 1,000kWh 초과분 736.2원/kWh)·월간 최저요금 1,000원을 공식 근거와 provenance로 편입
+- [x] 다음 제품 확장 방향을 같은 앱의 `전기 / 가스` utility switch로 확정하고, 가스 raw meter m³·데이터 migration·domain 분리·gas tariff provenance 계약을 `docs/GAS_METER_DIRECTION.md`에 고정
 
-현재 UI는 실제 repository API/domain 계약을 사용하며, canonical Cloudflare remote D1 및 Google Web Client / Cloudflare auth runtime이 연결되어 dev preview(`https://dev-electricity-meter-tracker.247dev.workers.dev`)에서 실제 로그인과 데이터 복원이 검증되었습니다. Google credential 검증 실패는 public 응답과 UI에 verifier/provider detail을 노출하지 않고 server diagnostic에만 남깁니다. PWA는 설치 가능한 app shell 계약까지만 포함하며 service worker, offline cache, offline write queue, Background Sync는 아직 추가하지 않습니다. 전기요금은 주택용(저압) 2023-11-09 개정 policy(2026-09-09 공식 출처 확인) 기준 기본요금·전력량요금·기후환경요금·연료비조정요금(분기 고지 window)·부가가치세·전력산업기반기금·월간 최저요금을 더한 예상 합계(10원 미만 절사)를 표시하고, 복지할인과 TV수신료, 그리고 공식 고지가 없는 분기의 연료비조정요금을 미반영 항목으로 UI에 명시하며, policy가 커버하지 않는 마감 월과 계산 근거가 없는 경우 기존 미연결/자료 부족 표시를 유지합니다. repository 자동화 테스트에서는 deterministic mock과 local D1/workerd를 사용합니다.
+현재 UI는 실제 repository API/domain 계약을 사용하며, canonical Cloudflare remote D1 및 Google Web Client / Cloudflare auth runtime이 연결되어 dev preview(`https://dev-electricity-meter-tracker.247dev.workers.dev`)에서 실제 로그인과 데이터 복원이 검증되었습니다. Google credential 검증 실패는 public 응답과 UI에 verifier/provider detail을 노출하지 않고 server diagnostic에만 남깁니다. PWA는 설치 가능한 app shell 계약까지만 포함하며 service worker, offline cache, offline write queue, Background Sync는 아직 추가하지 않습니다. 전기요금은 주택용(저압) 2023-11-09 개정 policy(2026-09-09 공식 출처 확인) 기준 기본요금·전력량요금·기후환경요금·연료비조정요금(분기 고지 window)·부가가치세·전력산업기반기금·월간 최저요금을 더한 예상 합계(10원 미만 절사)를 표시하고, 복지할인과 TV수신료, 그리고 공식 고지가 없는 분기의 연료비조정요금을 미반영 항목으로 UI에 명시하며, policy가 커버하지 않는 마감 월과 계산 근거가 없는 경우 기존 미연결/자료 부족 표시를 유지합니다. repository 자동화 테스트에서는 deterministic mock과 local D1/workerd를 사용합니다. 다음 제품 확장은 전기 runtime을 보존하면서 `전기 / 가스`를 상위 utility switch로 추가하는 방향이며, 현재 schema/API의 `Wh/kWh` 전용 계약을 가스 값에 그대로 재사용하지 않습니다.
 
 ## 완료 WorkUnit: 모바일 UI와 auth/API/domain 연결 baseline
 
@@ -127,11 +128,29 @@
 - `domain-tests/tariff.test.mjs`가 60개 테스트로 component window 유효성, 최저요금, 999/1,000/1,001kWh 슈퍼유저 경계(하계·동계 적용/기타계절 미적용), 연료비 분기 window(2026-06은 2분기 window, 2026-10은 미커버), VAT 4사5입 경계, 기금 요율 window별 10원 절사, 예상 합계 10원 절사를 검증한다.
 - 홈 UI는 예상 합계 원 단위와 함께 policy label·확인일·포함 항목·연료비 고지 window와 단가(+5.0원/kWh)·미반영 항목을 note로 표시하며, "예상 전기요금" 문구를 유지한다. `tests/ui.spec.ts` 기대값을 148,500 원 기준으로 갱신했다.
 
+## 확정 방향: 전기 / 가스 계량기
+
+- 같은 앱에서 ready UI 상위에 `[전기] [가스]` utility switch를 두고 기존 `홈 / 기록 / 분석 / 설정`과 utility별 meter selector를 재사용한다.
+- 가스 사용자-facing 명칭은 `가스`로 통일한다.
+- 현재 runtime은 전기만 지원하므로 schema/API/domain 없이 빈 가짜 가스 탭만 먼저 추가하지 않는다.
+- 기존 meter는 gas migration 시 모두 `electricity`로 보존하고, meter의 utility 종류는 생성 후 변경 불가로 한다.
+- 현재 `readings.cumulative_wh`, API `cumulativeWh/cumulativeKwh`, domain `usageWh/averagePowerW`는 전기 전용 의미다. gas 값을 여기에 억지로 넣지 않고 versioned D1 migration + neutral raw counter contract를 먼저 만든다.
+- 권장 raw storage 의미는 meter base unit의 1/1000 정수 `cumulative_milliunit`: 전기 1 = 1 Wh, 가스 1 = 0.001 m³. 기존 electricity `cumulative_wh` 값은 숫자 변환 없이 1:1 보존 가능하다.
+- 공통 cumulative delta/time/date/billing/forecast scalar와 전기 전용 W/kWh/tariff, 가스 전용 m³/m³·h/gas tariff를 분리한다.
+- gas usage/forecast는 tariff 없이 먼저 완성할 수 있다. 예상 가스요금은 공급사/지역/effective tariff provenance가 확인된 범위에서만 붙인다.
+- gas tariff를 위해 처음부터 사용계약번호·상세주소를 수집하지 않는다. 공급사/지역 선택으로 충분한지 먼저 검토한다.
+
+세부 계약과 공식 도시가스 요금 구조 근거는 `docs/GAS_METER_DIRECTION.md`를 따른다.
+
 ## 다음 1순위 후보
 
-- 실제 owner/viewer 공유 초대/해제 UI와 관리 API(초대 수단/데이터 모델 확정이 필요한 Discussion Gate)
-- 복지할인 optional policy(대상/한도 공식 matrix 확인과 사용자 자격 입력 UX/개인정보 계약이 필요한 별도 후속, Discussion Gate)
-- 2026년 4분기 연료비조정단가 공시 확인 시 fuel window 추가와 confirmedOn 갱신
-- 요금 항목별 원단위 처리의 법령/시행세칙 원문 확인(현재는 한전ON 공식 계산식 + 저장소 규칙 병기)
+1. **가스 foundation migration** — `utilityKind` meter contract + 기존 meter electricity backfill + raw reading neutral fixed-point migration + API resource/input 정합화. canonical D1 값 보존, schema/local workerd/Worker 회귀를 같은 WorkUnit에서 완료.
+2. **공통 counter/domain core + gas usage** — 전기 결과를 바꾸지 않는 unit-neutral cumulative/interval/calendar/billing/forecast scalar 추출, gas m³/m³·h adapter와 경계 테스트 추가.
+3. **실제 `[전기] [가스]` UI** — utility별 meter 생성/선택/empty state, gas quick input, 기록/분석/설정 단위 전환, 320px/iPhone/keyboard/owner-viewer 회귀. 1·2 완료 전 빈 탭만 추가하지 않음.
+4. **gas tariff policy** — provider/지역/effective window/보정계수·평균열량·원/MJ·기본료·VAT 공식 provenance를 가진 별도 모듈. 공급사/지역 입력 UX가 실제 제품 계약을 갈라놓을 때만 Discussion Gate.
+5. 실제 owner/viewer 공유 초대/해제 UI와 관리 API(초대 수단/데이터 모델 확정이 필요한 Discussion Gate).
+6. 복지할인 optional policy(대상/한도 공식 matrix 확인과 사용자 자격 입력 UX/개인정보 계약이 필요한 별도 후속, Discussion Gate).
+7. 2026년 4분기 연료비조정단가 공시 확인 시 fuel window 추가와 confirmedOn 갱신.
+8. 요금 항목별 원단위 처리의 법령/시행세칙 원문 확인(현재는 한전ON 공식 계산식 + 저장소 규칙 병기).
 
 VERSION/tag/release/main 통합/정식 production 배포는 사용자 승인 없이 진행하지 않습니다.
