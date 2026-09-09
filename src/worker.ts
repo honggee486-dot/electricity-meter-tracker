@@ -200,19 +200,43 @@ function singleFormValue(form: URLSearchParams, name: string): string | null {
   return values.length === 1 && values[0].length > 0 ? values[0] : null;
 }
 
+class RequestBodyTooLargeError extends Error {}
+
+async function readLimitedBody(request: Request, limit: number): Promise<string> {
+  const declaredLength = request.headers.get('content-length');
+  if (declaredLength && /^\d+$/.test(declaredLength) && Number(declaredLength) > limit) {
+    await request.body?.cancel();
+    throw new RequestBodyTooLargeError();
+  }
+  if (!request.body) return '';
+
+  // Bound memory and bytes consumed even when Content-Length is absent or inaccurate.
+  const bytes = new Uint8Array(limit);
+  const reader = request.body.getReader();
+  let length = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value.byteLength > limit - length) {
+        await reader.cancel();
+        throw new RequestBodyTooLargeError();
+      }
+      bytes.set(value, length);
+      length += value.byteLength;
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return new TextDecoder().decode(bytes.subarray(0, length));
+}
+
 async function parseLoginForm(request: Request): Promise<URLSearchParams | null> {
   const contentType = request.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase();
   if (contentType !== 'application/x-www-form-urlencoded') {
     return null;
   }
-  const declaredLength = request.headers.get('content-length');
-  if (declaredLength && /^\d+$/.test(declaredLength) && Number(declaredLength) > AUTH_FORM_LIMIT_BYTES) {
-    throw new RangeError('Auth request body is too large.');
-  }
-  const body = await request.text();
-  if (new TextEncoder().encode(body).byteLength > AUTH_FORM_LIMIT_BYTES) {
-    throw new RangeError('Auth request body is too large.');
-  }
+  const body = await readLimitedBody(request, AUTH_FORM_LIMIT_BYTES);
   return new URLSearchParams(body);
 }
 
@@ -221,13 +245,14 @@ async function parseJsonObject(request: Request): Promise<Record<string, unknown
   if (contentType !== 'application/json') {
     return apiError(415, 'UNSUPPORTED_MEDIA_TYPE', 'Expected application/json.');
   }
-  const declaredLength = request.headers.get('content-length');
-  if (declaredLength && /^\d+$/.test(declaredLength) && Number(declaredLength) > API_JSON_LIMIT_BYTES) {
-    return apiError(413, 'REQUEST_TOO_LARGE', 'Request body is too large.');
-  }
-  const text = await request.text();
-  if (new TextEncoder().encode(text).byteLength > API_JSON_LIMIT_BYTES) {
-    return apiError(413, 'REQUEST_TOO_LARGE', 'Request body is too large.');
+  let text: string;
+  try {
+    text = await readLimitedBody(request, API_JSON_LIMIT_BYTES);
+  } catch (error) {
+    if (error instanceof RequestBodyTooLargeError) {
+      return apiError(413, 'REQUEST_TOO_LARGE', 'Request body is too large.');
+    }
+    throw error;
   }
 
   try {
@@ -419,7 +444,7 @@ async function handleGoogleLogin(
   try {
     form = await parseLoginForm(request);
   } catch (error) {
-    if (error instanceof RangeError) {
+    if (error instanceof RequestBodyTooLargeError) {
       return apiError(413, 'REQUEST_TOO_LARGE', 'Authentication request body is too large.');
     }
     throw error;

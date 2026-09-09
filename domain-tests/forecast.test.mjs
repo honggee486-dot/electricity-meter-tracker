@@ -54,14 +54,37 @@ test('missing cycle-start evidence suppresses cycle forecast while independent e
   assert.equal(result.confidence?.forecastAvailable, false);
 });
 
-test('cycle start itself has zero observation coverage and does not invent a forecast', () => {
+test('cycle start itself has known zero usage but no average or forecast', () => {
   const readings = [createMeterReadingPoint('100', at('2026-08-22T00:00:00+09:00'))];
   const result = calculateUsageForecast(readings, day(21), 'Asia/Seoul', 7);
 
   assert.equal(result.currentCycle?.startBoundary?.provenance, 'actual');
   assert.equal(result.currentCycle?.observedMs, 0);
+  assert.equal(result.currentCycle?.usageToDateWh, 0);
+  assert.equal(result.currentCycle?.usageToDateKwh, 0);
+  assert.equal(result.currentCycle?.averagePowerW, null);
+  assert.equal(result.currentCycle?.averageDailyUsageKwh, null);
   assert.equal(result.currentCycle?.projectedCloseUsageKwh, null);
+  assert.equal(result.currentCycle?.normalized30DayUsageKwh, null);
   assert.equal(result.confidence?.observationCoverageRatio, 0);
+  assert.equal(result.confidence?.forecastAvailable, false);
+});
+
+test('a reading closing the previous month starts the next cycle with known zero usage', () => {
+  const readings = [
+    createMeterReadingPoint('100', at('2026-08-01T00:00:00+09:00')),
+    createMeterReadingPoint('200', at('2026-09-01T00:00:00+09:00')),
+  ];
+  const result = calculateUsageForecast(readings, { kind: 'month-end' }, 'Asia/Seoul', 7);
+
+  assert.equal(result.previousCycle?.usageWh, 100_000);
+  assert.equal(result.latestInterval?.usageWh, 100_000);
+  assert.equal(result.currentCycle?.startBoundary?.provenance, 'actual');
+  assert.equal(result.currentCycle?.usageToDateWh, 0);
+  assert.equal(result.currentCycle?.usageToDateKwh, 0);
+  assert.equal(result.currentCycle?.projectedCloseUsageWh, null);
+  assert.equal(result.confidence?.forecastAvailable, false);
+  assert.equal(result.comparison, null);
 });
 
 test('interpolated cycle start is preserved as confidence evidence', () => {

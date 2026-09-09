@@ -1,4 +1,4 @@
-import { api, ApiError, type AuthConfigResponse, type BillingClose, type MeterResource, type ReadingResource } from './api';
+import { api, ApiError, type AuthConfigResponse, type BillingClose, type MeterResource, type MeterSettingsInput, type ReadingResource } from './api';
 import { getBillingCycleContext } from './domain/billingCycle';
 import { splitUsageIntervalByLocalDate } from './domain/dailyUsage';
 import { calculateUsageForecast, type UsageForecastSnapshot } from './domain/forecast';
@@ -36,6 +36,8 @@ interface State {
   readings: ReadingResource[];
   notice: Notice;
   errorText: string;
+  meterLoading: boolean;
+  refreshFailed: boolean;
 }
 
 interface DailyAggregate {
@@ -55,7 +57,29 @@ const app = document.querySelector<HTMLDivElement>('#app')!;
 const state: State = {
   phase: 'loading', authConfig: null, meters: [], selectedMeterId: null,
   readings: [], notice: null, errorText: '',
+  meterLoading: false, refreshFailed: false,
 };
+
+// Requests may finish after another selection or another authenticated session.
+let generation = 0;
+let authGeneration = 0;
+const pendingMutations = new Map<string, symbol>();
+const readingDrafts = new Map<string, string>();
+const settingsDrafts = new Map<string, MeterSettingsInput>();
+let createDraft: MeterSettingsInput | null = null;
+
+function settingsInput(form: HTMLFormElement): MeterSettingsInput {
+  const data = new FormData(form);
+  return {
+    name: String(data.get('name') ?? ''),
+    timezone: String(data.get('timezone') ?? ''),
+    billingClose: parseCloseValue(String(data.get('billingClose') ?? '21')),
+  };
+}
+
+function meterToolbar(meter: MeterResource): string {
+  return `<section class="meter-toolbar" aria-label="현재 계량기"><label for="meter-select">계량기</label><select id="meter-select">${state.meters.map(item => `<option value="${escapeHtml(item.meterId)}"${item.meterId === meter.meterId ? ' selected' : ''}>${escapeHtml(item.name)} · ${item.role}</option>`).join('')}</select>${meter.role === 'owner' ? '' : '<span class="role-badge viewer">viewer · 조회 전용</span>'}</section>`;
+}
 
 const escapeHtml = (value: string): string => value.replace(/[&<>'"]/g, char => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;',
@@ -232,12 +256,24 @@ function render(): void {
         <button class="primary" type="submit">계량기 만들기</button>
       </form></section>`);
     bindLogout();
-    document.querySelector<HTMLFormElement>('#meter-create-form')?.addEventListener('submit', event => void createMeter(event));
+    const form = document.querySelector<HTMLFormElement>('#meter-create-form')!;
+    const pending = pendingMutations.has('create');
+    restoreSettingsForm(form, createDraft, pending);
+    const saveDraft = (): void => { if (!pending) createDraft = settingsInput(form); };
+    form.addEventListener('input', saveDraft);
+    form.addEventListener('change', saveDraft);
+    form.addEventListener('submit', event => void createMeter(event));
     return;
   }
 
   const meter = selectedMeter() ?? state.meters[0];
   state.selectedMeterId = meter.meterId;
+  if (state.meterLoading) {
+    app.innerHTML = shell(`${meterToolbar(meter)}<p class="state-copy" role="status">${escapeHtml(meter.name)} 기록을 불러오는 중입니다.</p>`);
+    bindLogout();
+    bindMeterSelection();
+    return;
+  }
   let forecast: UsageForecastSnapshot | null = null;
   let daily: DailyAggregate[] = [];
   try {
@@ -261,7 +297,6 @@ function render(): void {
     : null;
   const cycle = liveCycle;
   const isOwner = meter.role === 'owner';
-  const readonlyNote = isOwner ? '' : '<span class="role-badge viewer">viewer · 조회 전용</span>';
   const readingRows = [...state.readings].sort((a, b) => b.measuredAtMs - a.measuredAtMs);
   const dateTime = new Intl.DateTimeFormat('ko-KR', {
     timeZone: meter.timezone, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
@@ -271,7 +306,7 @@ function render(): void {
   const tariff = tariffDisplay(liveCycle.closeYear, liveCycle.closeMonth, currentCycle?.projectedCloseUsageWh ?? null);
 
   app.innerHTML = shell(`
-    <section class="meter-toolbar" aria-label="현재 계량기"><label for="meter-select">계량기</label><select id="meter-select">${state.meters.map(item => `<option value="${escapeHtml(item.meterId)}"${item.meterId === meter.meterId ? ' selected' : ''}>${escapeHtml(item.name)} · ${item.role}</option>`).join('')}</select>${readonlyNote}</section>
+    ${meterToolbar(meter)}
     ${noticeHtml()}
     <section id="home" class="screen" aria-labelledby="home-title">
       <div class="page-heading"><p class="eyebrow">빠른 기록</p><h1 id="home-title" tabindex="-1">${escapeHtml(meter.name)}</h1><p>현재 검침기간 <strong>${cycle.displayStartLocalDate} ~ ${cycle.displayEndLocalDate}</strong></p></div>
@@ -285,16 +320,16 @@ function render(): void {
       <section class="cycle-summary" aria-labelledby="cycle-title"><div class="section-heading"><h2 id="cycle-title">이번 검침주기</h2><span class="deadline">마감까지 약 ${Math.max(0, Math.ceil(liveContext.remainingMs / 86_400_000))}일</span></div><dl class="summary-list"><div><dt>최신 기록까지</dt><dd>${formatKwh(currentCycle?.usageToDateWh ?? null)}</dd></div><div><dt>최근 완전 일평균 · 최대 7일</dt><dd>${forecast?.recentDailyAverage ? `${forecast.recentDailyAverage.usageKwhPerDay.toFixed(1)} kWh/일` : '자료 부족'}</dd></div><div><dt>마감 예상 사용량</dt><dd>${formatKwh(currentCycle?.projectedCloseUsageWh ?? null)}</dd></div><div><dt>예상 전기요금</dt><dd>${tariff ? escapeHtml(tariff.amount) : '요금 정책 연결 전'}</dd></div></dl><p class="note">${tariff ? escapeHtml(tariff.note) : '요금은 아직 계산하지 않습니다. 사용량과 예측은 저장된 원본 기록에서 다시 계산합니다.'}</p></section>
     </section>
     <section id="records" class="screen" aria-labelledby="records-title" hidden><div class="page-heading"><p class="eyebrow">원본 기록</p><h1 id="records-title" tabindex="-1">기록</h1><p>${escapeHtml(meter.timezone)}</p></div>${readingRows.length ? `<ul class="reading-list">${readingRows.map(reading => `<li><span><time datetime="${new Date(reading.measuredAtMs).toISOString()}">${dateTime.format(reading.measuredAtMs)}</time><small>실제 측정</small></span><strong>${escapeHtml(formatCumulativeKwh(reading.cumulativeWh))}<small> kWh</small></strong></li>`).join('')}</ul>` : '<p class="empty-state">아직 기록이 없습니다.</p>'}</section>
-    <section id="analysis" class="screen" aria-labelledby="analysis-title" hidden><div class="page-heading"><p class="eyebrow">저장된 기록으로 계산</p><h1 id="analysis-title" tabindex="-1">분석</h1></div><dl class="analysis-list"><div><dt>현재 검침주기 평균</dt><dd>${currentCycle?.averageDailyUsageKwh !== null && currentCycle?.averageDailyUsageKwh !== undefined ? `${currentCycle.averageDailyUsageKwh.toFixed(1)} kWh/일` : '자료 부족'}</dd></div><div class="forecast"><dt>검침 마감 예상</dt><dd>${formatKwh(currentCycle?.projectedCloseUsageWh ?? null)}</dd></div><div class="normalized"><dt>30일 환산</dt><dd>${formatKwh(currentCycle?.normalized30DayUsageWh ?? null)}</dd></div><div><dt>이전 주기 대비</dt><dd>${comparison ? `${comparison.projectedVsPreviousDeltaKwh >= 0 ? '+' : ''}${comparison.projectedVsPreviousDeltaKwh.toFixed(1)} kWh${comparison.projectedVsPreviousPercent === null ? '' : ` · ${comparison.projectedVsPreviousPercent.toFixed(1)}%`}` : '자료 부족'}</dd></div></dl>${confidence ? `<p class="note">관측 범위 ${(confidence.observationCoverageRatio * 100).toFixed(0)}% · 최근 완전 일자 ${confidence.recentFullDaysUsed}/${confidence.requestedRecentDays}일 · 시작 경계 ${confidence.startBoundaryProvenance ?? '자료 부족'}</p>` : '<p class="note">예측 신뢰도를 판단할 기록이 아직 부족합니다.</p>'}<section class="daily"><h2>일별 사용량</h2>${daily.length ? `<ul class="daily-list">${daily.map(day => `<li><span>${day.localDate.slice(5).replace('-', '/')}</span><strong>${(day.usageWh / 1000).toFixed(1)}<small> kWh</small></strong><span class="basis">${day.interpolated ? '추정·보간' : '경계 측정'}</span></li>`).join('')}</ul>` : '<p class="empty-state">일별 사용량을 계산할 구간이 없습니다.</p>'}</section></section>
+    <section id="analysis" class="screen" aria-labelledby="analysis-title" hidden><div class="page-heading"><p class="eyebrow">저장된 기록으로 계산</p><h1 id="analysis-title" tabindex="-1">분석</h1></div><dl class="analysis-list"><div><dt>현재 검침주기 평균</dt><dd>${currentCycle?.averageDailyUsageKwh !== null && currentCycle?.averageDailyUsageKwh !== undefined ? `${currentCycle.averageDailyUsageKwh.toFixed(1)} kWh/일` : '자료 부족'}</dd></div><div class="forecast"><dt>검침 마감 예상</dt><dd>${formatKwh(currentCycle?.projectedCloseUsageWh ?? null)}</dd></div><div class="normalized"><dt>30일 환산</dt><dd>${formatKwh(currentCycle?.normalized30DayUsageWh ?? null)}</dd></div><div><dt>이전 주기 대비</dt><dd>${comparison ? `${comparison.projectedVsPreviousDeltaKwh >= 0 ? '+' : ''}${comparison.projectedVsPreviousDeltaKwh.toFixed(1)} kWh${comparison.projectedVsPreviousPercent === null ? '' : ` · ${comparison.projectedVsPreviousPercent.toFixed(1)}%`}` : '자료 부족'}</dd></div></dl>${confidence ? `<p class="note">관측 범위 ${(confidence.observationCoverageRatio * 100).toFixed(0)}% · 최근 완전 일자 ${confidence.recentFullDaysUsed}/${confidence.requestedRecentDays}일 · 시작 경계 ${confidence.startBoundaryProvenance ?? '자료 부족'}</p>` : '<p class="note">예측 신뢰도를 판단할 기록이 아직 부족합니다.</p>'}<section class="daily"><h2>일별 사용량</h2><p class="note">기록 사이 관측 구간의 합계로, 하루 전체 사용량과 다를 수 있습니다.</p>${daily.length ? `<ul class="daily-list">${daily.map(day => `<li><span>${day.localDate.slice(5).replace('-', '/')}</span><strong>${(day.usageWh / 1000).toFixed(1)}<small> kWh</small></strong><span class="basis">${day.interpolated ? '추정·보간' : '실측 구간'}</span></li>`).join('')}</ul>` : '<p class="empty-state">일별 사용량을 계산할 구간이 없습니다.</p>'}</section></section>
     <section id="settings" class="screen" aria-labelledby="settings-title" hidden><div class="page-heading"><p class="eyebrow">계량기 기준</p><h1 id="settings-title" tabindex="-1">설정</h1><p>${isOwner ? '소유자만 변경할 수 있습니다.' : '공유받은 계량기는 조회만 가능합니다.'}</p></div>${isOwner ? `<form id="meter-settings-form" class="stack-form"><label>계량기 이름<input name="name" required maxlength="80" value="${escapeHtml(meter.name)}"></label><label>시간대<input name="timezone" required value="${escapeHtml(meter.timezone)}"></label><label>검침 마감<select name="billingClose">${closeSelectOptions(meter.billingClose)}</select></label><p class="field-help">29~31일이 없는 달은 그 달 월말로 자동 보정됩니다. 월말은 매달 실제 마지막 날입니다.</p><button class="primary" type="submit">설정 저장</button></form>` : `<dl class="settings-list"><div><dt>계량기 이름</dt><dd>${escapeHtml(meter.name)}</dd></div><div><dt>검침 마감</dt><dd>${closeLabel(meter.billingClose)}</dd></div><div><dt>시간대</dt><dd>${escapeHtml(meter.timezone)}</dd></div></dl><p class="note">29~31일 고정 마감은 해당 날짜가 없는 달에 그 달 월말로 자동 보정됩니다. 월말 설정은 매달 실제 마지막 날입니다. viewer 권한은 계량기 설정과 원본 기록을 변경할 수 없습니다.</p>`}</section>
   `, true);
 
-  bindReadyEvents(isOwner);
+  bindReadyEvents(meter);
   navigate(false);
 }
 
 function noticeHtml(): string {
-  return state.notice ? `<p class="action-notice ${state.notice.kind}" role="status">${escapeHtml(state.notice.text)}</p>` : '';
+  return state.notice ? `<p class="action-notice ${state.notice.kind}" role="status">${escapeHtml(state.notice.text)}</p>${state.refreshFailed ? '<button id="refresh-button" class="text-button" type="button">최신 정보 다시 불러오기</button>' : ''}` : '';
 }
 
 function configureGoogleButton(): void {
@@ -349,36 +384,57 @@ async function completeGoogleLogin(credential: string, csrfToken: string): Promi
   }
 }
 
-async function bootstrap(): Promise<void> {
+async function signedOut(notice: Notice = null): Promise<void> {
+  const request = ++generation;
+  ++authGeneration;
+  pendingMutations.clear();
+  readingDrafts.clear();
+  settingsDrafts.clear();
+  createDraft = null;
+  state.meters = [];
+  state.selectedMeterId = null;
+  state.readings = [];
+  state.meterLoading = false;
+  state.refreshFailed = false;
+  state.notice = notice;
   state.phase = 'loading';
+  render();
+  try {
+    const config = await api.authConfig();
+    if (request !== generation) return;
+    state.authConfig = config;
+    state.phase = 'signed-out';
+    render();
+  } catch (error) {
+    if (request !== generation) return;
+    if (error instanceof ApiError && error.status === 503) {
+      state.phase = 'auth-unconfigured';
+      render();
+    } else fail(error);
+  }
+}
+
+async function bootstrap(): Promise<void> {
+  const request = ++generation;
+  ++authGeneration;
+  pendingMutations.clear();
+  state.phase = 'loading';
+  state.meterLoading = false;
+  state.refreshFailed = false;
   state.notice = null;
   render();
   try {
     await api.session();
-    state.phase = 'ready';
-    await refreshMeters();
+    if (request !== generation) return;
+    await refreshMeters(undefined, request);
   } catch (error) {
+    if (request !== generation) return;
     if (error instanceof ApiError && error.status === 401) {
-      try {
-        state.authConfig = await api.authConfig();
-        state.phase = 'signed-out';
-        render();
-      } catch (configError) {
-        if (configError instanceof ApiError && configError.status === 503) {
-          state.phase = 'auth-unconfigured';
-          render();
-          return;
-        }
-        fail(configError);
-      }
-      return;
-    }
-    if (error instanceof ApiError && error.status === 503) {
+      await signedOut();
+    } else if (error instanceof ApiError && error.status === 503) {
       state.phase = 'auth-unconfigured';
       render();
-      return;
-    }
-    fail(error);
+    } else fail(error);
   }
 }
 
@@ -388,68 +444,148 @@ function fail(error: unknown): void {
   render();
 }
 
-async function refreshMeters(preferredMeterId?: string): Promise<void> {
-  state.meters = await api.meters();
+async function refreshMeters(preferredMeterId?: string, request = generation): Promise<void> {
+  const meters = await api.meters();
+  if (request !== generation) return;
   const preferred = preferredMeterId ?? state.selectedMeterId;
-  state.selectedMeterId = state.meters.some(meter => meter.meterId === preferred)
-    ? preferred
-    : state.meters[0]?.meterId ?? null;
-  state.readings = state.selectedMeterId ? await api.readings(state.selectedMeterId) : [];
+  const meterId = meters.some(meter => meter.meterId === preferred) ? preferred : meters[0]?.meterId ?? null;
+  const readings = meterId ? await api.readings(meterId) : [];
+  if (request !== generation) return;
+  state.meters = meters;
+  state.selectedMeterId = meterId;
+  state.readings = readings;
   state.phase = 'ready';
+  state.meterLoading = false;
+  state.refreshFailed = false;
   render();
+}
+
+async function refreshAfterSave(meterId: string, request: number, savedText: string): Promise<void> {
+  try {
+    await refreshMeters(meterId, request);
+  } catch (error) {
+    if (request !== generation) return;
+    const notice: Notice = { kind: 'error', text: `${savedText} 최신 정보를 불러오지 못했습니다. ${friendlyError(error)}` };
+    if (error instanceof ApiError && error.status === 401) {
+      await signedOut(notice);
+      return;
+    }
+    state.notice = notice;
+    state.meterLoading = false;
+    state.refreshFailed = true;
+    render();
+  }
+}
+
+async function mutationError(error: unknown, request: number): Promise<void> {
+  if (request !== generation) return;
+  if (error instanceof ApiError && error.status === 401) {
+    await signedOut({ kind: 'error', text: friendlyError(error) });
+    return;
+  }
+  state.notice = { kind: 'error', text: friendlyError(error) };
+  render();
+}
+
+function finishMutation(key: string, token: symbol): void {
+  if (pendingMutations.get(key) !== token) return;
+  pendingMutations.delete(key);
+  if (state.phase === 'ready' && (key === 'create' || key === state.selectedMeterId)) render();
 }
 
 async function createMeter(event: SubmitEvent): Promise<void> {
   event.preventDefault();
   const form = event.currentTarget as HTMLFormElement;
-  const data = new FormData(form);
+  const key = 'create';
+  if (!form.isConnected || state.phase !== 'ready' || state.meters.length || pendingMutations.has(key)) return;
+  const input = settingsInput(form);
+  createDraft = input;
+  const token = Symbol();
+  const request = generation;
+  const session = authGeneration;
+  pendingMutations.set(key, token);
+  state.notice = null;
+  render();
   try {
-    const meter = await api.createMeter({
-      name: String(data.get('name') ?? ''),
-      timezone: String(data.get('timezone') ?? ''),
-      billingClose: parseCloseValue(String(data.get('billingClose') ?? '21')),
-    });
-    state.notice = { kind: 'success', text: '계량기를 만들었습니다.' };
-    await refreshMeters(meter.meterId);
+    const meter = await api.createMeter(input);
+    if (session !== authGeneration) return;
+    createDraft = null;
+    if (request !== generation) return;
+    state.meters = [meter];
+    state.selectedMeterId = meter.meterId;
+    state.readings = [];
+    const savedText = '계량기를 만들었습니다.';
+    state.notice = { kind: 'success', text: savedText };
+    await refreshAfterSave(meter.meterId, request, savedText);
   } catch (error) {
-    state.notice = { kind: 'error', text: friendlyError(error) };
-    render();
+    await mutationError(error, request);
+  } finally {
+    finishMutation(key, token);
   }
 }
 
-async function saveMeterSettings(event: SubmitEvent): Promise<void> {
+function canSubmit(form: HTMLFormElement, meter: MeterResource, request: number): boolean {
+  return form.isConnected && state.phase === 'ready' && !state.meterLoading
+    && request === generation && state.selectedMeterId === meter.meterId
+    && meter.role === 'owner' && !pendingMutations.has(meter.meterId);
+}
+
+async function saveMeterSettings(event: SubmitEvent, meter: MeterResource, request: number): Promise<void> {
   event.preventDefault();
-  const meter = selectedMeter();
-  if (!meter || meter.role !== 'owner') return;
   const form = event.currentTarget as HTMLFormElement;
-  const data = new FormData(form);
+  if (!canSubmit(form, meter, request)) return;
+  const input = settingsInput(form);
+  settingsDrafts.set(meter.meterId, input);
+  const token = Symbol();
+  const session = authGeneration;
+  pendingMutations.set(meter.meterId, token);
+  state.notice = null;
+  state.refreshFailed = false;
+  render();
   try {
-    const updated = await api.updateMeter(meter.meterId, {
-      name: String(data.get('name') ?? ''),
-      timezone: String(data.get('timezone') ?? ''),
-      billingClose: parseCloseValue(String(data.get('billingClose') ?? '21')),
-    });
-    state.notice = { kind: 'success', text: '계량기 설정을 저장했습니다.' };
-    await refreshMeters(updated.meterId);
+    const updated = await api.updateMeter(meter.meterId, input);
+    if (session !== authGeneration) return;
+    settingsDrafts.delete(meter.meterId);
+    if (state.phase !== 'ready' || state.selectedMeterId !== meter.meterId) return;
+    const refreshRequest = ++generation;
+    state.meters = state.meters.map(item => item.meterId === updated.meterId ? updated : item);
+    const savedText = '계량기 설정을 저장했습니다.';
+    state.notice = { kind: 'success', text: savedText };
+    await refreshAfterSave(meter.meterId, refreshRequest, savedText);
   } catch (error) {
-    state.notice = { kind: 'error', text: friendlyError(error) };
-    render();
+    await mutationError(error, request);
+  } finally {
+    finishMutation(meter.meterId, token);
   }
 }
 
-async function createReading(event: SubmitEvent): Promise<void> {
+async function createReading(event: SubmitEvent, meter: MeterResource, request: number): Promise<void> {
   event.preventDefault();
-  const meter = selectedMeter();
-  const input = document.querySelector<HTMLInputElement>('#meter-reading');
-  if (!meter || meter.role !== 'owner' || !input || !validReading(input.value)) return;
+  const form = event.currentTarget as HTMLFormElement;
+  const input = form.querySelector<HTMLInputElement>('#meter-reading');
+  if (!canSubmit(form, meter, request) || !input || !validReading(input.value)) return;
   const value = input.value;
+  readingDrafts.set(meter.meterId, value);
+  const token = Symbol();
+  const session = authGeneration;
+  pendingMutations.set(meter.meterId, token);
+  state.notice = null;
+  state.refreshFailed = false;
+  render();
   try {
-    await api.createReading(meter.meterId, { measuredAtMs: Date.now(), cumulativeKwh: value });
-    state.notice = { kind: 'success', text: `${value} kWh 기록을 저장했습니다.` };
-    await refreshMeters(meter.meterId);
+    const reading = await api.createReading(meter.meterId, { measuredAtMs: Date.now(), cumulativeKwh: value });
+    if (session !== authGeneration) return;
+    readingDrafts.delete(meter.meterId);
+    if (state.phase !== 'ready' || state.selectedMeterId !== meter.meterId) return;
+    const refreshRequest = ++generation;
+    state.readings = [...state.readings.filter(item => item.readingId !== reading.readingId), reading];
+    const savedText = `${value} kWh 기록을 저장했습니다.`;
+    state.notice = { kind: 'success', text: savedText };
+    await refreshAfterSave(meter.meterId, refreshRequest, savedText);
   } catch (error) {
-    state.notice = { kind: 'error', text: friendlyError(error) };
-    render();
+    await mutationError(error, request);
+  } finally {
+    finishMutation(meter.meterId, token);
   }
 }
 
@@ -465,42 +601,99 @@ function validReading(value: string): boolean {
 
 function bindLogout(): void {
   document.querySelector<HTMLButtonElement>('#logout-button')?.addEventListener('click', async () => {
+    const request = ++generation;
+    ++authGeneration;
+    pendingMutations.clear();
+    readingDrafts.clear();
+    settingsDrafts.clear();
+    createDraft = null;
+    state.phase = 'loading';
+    render();
     try {
       await api.logout();
-      await bootstrap();
+      if (request === generation) await bootstrap();
     } catch (error) {
-      state.notice = { kind: 'error', text: friendlyError(error) };
-      render();
+      if (request === generation) fail(error);
     }
   });
 }
 
-function bindReadyEvents(isOwner: boolean): void {
-  bindLogout();
+function bindMeterSelection(): void {
   document.querySelector<HTMLSelectElement>('#meter-select')?.addEventListener('change', async event => {
+    const meterId = (event.currentTarget as HTMLSelectElement).value;
+    const request = ++generation;
     state.notice = null;
-    state.selectedMeterId = (event.currentTarget as HTMLSelectElement).value;
+    state.refreshFailed = false;
+    state.selectedMeterId = meterId;
+    state.readings = [];
+    state.meterLoading = true;
+    render();
     try {
-      state.readings = await api.readings(state.selectedMeterId);
+      const readings = await api.readings(meterId);
+      if (request !== generation) return;
+      state.readings = readings;
+      state.meterLoading = false;
       render();
     } catch (error) {
-      fail(error);
+      if (request !== generation) return;
+      if (error instanceof ApiError && error.status === 401) {
+        await signedOut({ kind: 'error', text: friendlyError(error) });
+      } else fail(error);
     }
   });
+}
+
+function restoreSettingsForm(form: HTMLFormElement, draft: MeterSettingsInput | null, pending: boolean): void {
+  if (draft) {
+    (form.elements.namedItem('name') as HTMLInputElement).value = draft.name;
+    (form.elements.namedItem('timezone') as HTMLInputElement).value = draft.timezone;
+    (form.elements.namedItem('billingClose') as HTMLSelectElement).value = draft.billingClose.kind === 'month-end'
+      ? 'month-end' : String(draft.billingClose.day);
+  }
+  form.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>('input, select, button')
+    .forEach(control => { control.disabled = pending; });
+}
+
+function bindReadyEvents(meter: MeterResource): void {
+  bindLogout();
+  bindMeterSelection();
+  const request = generation;
+  const pending = pendingMutations.has(meter.meterId);
   const input = document.querySelector<HTMLInputElement>('#meter-reading');
   const button = document.querySelector<HTMLButtonElement>('#record-button');
-  if (input && button && isOwner) {
-    input.addEventListener('input', () => {
+  if (input && button && meter.role === 'owner') {
+    input.value = readingDrafts.get(meter.meterId) ?? '';
+    input.disabled = pending;
+    const updateInput = (): void => {
+      readingDrafts.set(meter.meterId, input.value);
       input.classList.toggle('long-value', input.value.length > 9);
-      button.disabled = !validReading(input.value);
-    });
+      button.disabled = pending || !validReading(input.value);
+    };
+    updateInput();
+    input.addEventListener('input', updateInput);
   }
-  document.querySelector<HTMLFormElement>('#reading-form')?.addEventListener('submit', event => void createReading(event));
-  document.querySelector<HTMLFormElement>('#meter-settings-form')?.addEventListener('submit', event => void saveMeterSettings(event));
+  document.querySelector<HTMLFormElement>('#reading-form')?.addEventListener('submit', event => void createReading(event, meter, request));
+  const settings = document.querySelector<HTMLFormElement>('#meter-settings-form');
+  if (settings) {
+    restoreSettingsForm(settings, settingsDrafts.get(meter.meterId) ?? null, pending);
+    const saveDraft = (): void => { if (!pending) settingsDrafts.set(meter.meterId, settingsInput(settings)); };
+    settings.addEventListener('input', saveDraft);
+    settings.addEventListener('change', saveDraft);
+    settings.addEventListener('submit', event => void saveMeterSettings(event, meter, request));
+  }
+  document.querySelector<HTMLButtonElement>('#refresh-button')?.addEventListener('click', () => {
+    const savedText = state.notice?.text.split(' 최신 정보를')[0] ?? '';
+    const refreshRequest = ++generation;
+    state.meterLoading = true;
+    state.refreshFailed = false;
+    state.notice = { kind: 'success', text: savedText };
+    render();
+    void refreshAfterSave(meter.meterId, refreshRequest, savedText);
+  });
 }
 
 function navigate(moveFocus: boolean): void {
-  if (state.phase !== 'ready' || state.meters.length === 0) return;
+  if (state.phase !== 'ready' || state.meterLoading || state.meters.length === 0) return;
   const target = location.hash.slice(1);
   const selected = screens.find(screen => screen.id === target) ?? screens[0];
   for (const screen of screens) document.getElementById(screen.id)!.hidden = screen.id !== selected.id;

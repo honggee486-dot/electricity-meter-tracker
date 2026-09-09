@@ -159,8 +159,16 @@ function calculateCurrentCycleForecast(
   const observedMs = latestReading.measuredAtMs - cycle.startMs;
   const remainingMs = cycle.endMs - latestReading.measuredAtMs;
 
-  if (startBoundary === null || observedMs <= 0) {
+  if (startBoundary === null || observedMs < 0) {
     return emptyCurrentCycleForecast(cycle, startBoundary, Math.max(0, observedMs), remainingMs);
+  }
+
+  if (observedMs === 0) {
+    return {
+      ...emptyCurrentCycleForecast(cycle, startBoundary, observedMs, remainingMs),
+      usageToDateWh: 0,
+      usageToDateKwh: 0,
+    };
   }
 
   const usageToDateWh = latestReading.cumulativeWh - startBoundary.cumulativeWh;

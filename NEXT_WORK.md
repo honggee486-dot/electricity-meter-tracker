@@ -142,6 +142,27 @@
 
 세부 계약과 공식 도시가스 요금 구조 근거는 `docs/GAS_METER_DIRECTION.md`를 따른다.
 
+## 2026-09-09 전체 방향 검토와 전기 안정화
+
+검토 출발점은 clean `work/0.1.0`, local/origin `01d8bfeb5cb745c7d5f461f3488ec002fef10fe4`였다. 이전 provisioning/실사용자 E2E 기록은 역사적 증거이며 현재 배포 검증을 대신하지 않는다.
+
+- **지금 수정:** JSON/GIS 본문을 전부 읽은 뒤 크기를 검사하던 경계를 읽는 도중 byte limit에서 중단하도록 변경했다. reading INSERT/UPDATE도 같은 SQL 문에서 기존 index로 양쪽 이웃을 검증해 동시 요청의 누적값 역행을 차단한다. 기존 schema/원본 데이터/API 단위는 유지한다.
+- **같이 보호:** owner/viewer/outsider mutation·조회, client utility/unit/owner 필드 주입 거부, 저장 직전 충돌의 기존 409 응답을 회귀 테스트로 확인한다. Python SQLite 검증은 복사한 SQL 대신 실제 persistence write SQL을 실행한다.
+- **UI 안정화:** 계량기별 입력 초안과 제출 중 잠금, 선택 요청 순서 검사, 전환 중 이전 폼 제거를 구현했다. 늦은 응답은 새 선택을 덮어쓰지 않으며 저장 중 원래 계량기로 돌아온 경우 완료된 기록을 다시 조회한다. POST/PUT 성공 뒤 조회만 실패한 경우에는 저장 완료와 조회 재시도를 분리하고, mutation 401은 이전 화면·초안을 지운 뒤 로그인으로 전환한다.
+- **관측 의미:** 새 검침주기 경계의 실측은 사용량 `0`과 예측 `null`을 구분한다. 일별 UI의 `경계 측정` 문구를 `실측 구간`으로 바꾸고 부분 관측 합계라는 안내를 추가했다.
+- **유지할 구조:** 원본 fixed-point 저장, 서버 권한, 순수 사용량과 전기 tariff 분리, 객관적인 forecast evidence, 모바일 빠른 입력, 다중 meter와 상위 utility 구분이 적절하다. 가스 runtime은 아직 없다.
+- **비용:** 새 dependency/service/index/파생 DB 저장은 추가하지 않는다. 이웃 검사는 기존 시간순 index를 재사용한다. 전체 readings 재조회와 전체 이력 일별 집계는 데이터 증가 시 비용·지연이 커지는 후속 관찰 항목이다. pagination은 검침 경계 보간용 양쪽 실측 보존 계약과 함께 독립 WorkUnit에서 설계한다. 실제 무료 한도 충족은 계정 사용량을 측정해야 판단할 수 있다([D1 공식 비용 기준](https://developers.cloudflare.com/d1/platform/pricing/)).
+- **문서:** `TARIFF_V2_RESOLUTION.md`는 완료된 v2의 과거 결정 기록으로 표시한다. 현재 요금 owner는 `TARIFF_POLICY.md`이며, 새 분기 단가/가스 요금 provenance를 이번 코드 검토로 확인했다고 간주하지 않는다.
+- **보류:** 일반 utility framework, 추가 서비스, 상세주소/계약번호 수집, 미구현 가스 탭, offline write queue, dashboard 확대와 branding 변경.
+
+검증: Windows에서 build, provisioning 13개, Worker 35개, SQLite schema/실제 write SQL 11개, domain UTC/Asia-Seoul 각 61개, Playwright Chromium/WebKit 60개가 통과했다. pinned Wrangler 4.129.0의 local D1/workerd persistence/auth/authorized CRUD 왕복도 통과했다(실행용 복사본의 CRLF만 LF로 정규화). 실사용자 Google 로그인·실제 iPhone·production D1은 이번 검증 대상이 아니다. tracked 파일의 고신뢰 Secret 패턴 검사는 일치가 없었으며 전체 Git 이력 보안 감사로 확대 해석하지 않는다.
+
+### 후속 domain 경계와 성능
+
+- **큰 허용 누적값의 보간 정밀도:** UTC 월말 검침, `2026-08-31T12:00Z → 2026-09-01T12:00Z`, raw `MAX_SAFE_INTEGER-1 → MAX_SAFE_INTEGER` Wh에서 일별 사용량은 각각 0.5 Wh지만 current-cycle 사용량은 1 Wh다. 보간한 큰 누적값을 다시 차감하면서 정밀도를 잃는다. raw 정수값은 변하지 않는다. billing/forecast 양쪽의 구간 delta 계산을 함께 보완하는 독립 WorkUnit으로 남긴다.
+- **긴 이력 집계:** UTC의 2016-09-01~2026-09-01 두 실측으로 최근 7일을 계산해도 전체 일자를 분할한다. 이 환경의 단회 실행은 약 1.68초였으며 성능 보장 수치는 아니다. forecast와 UI 일별 집계 양쪽에서 필요한 기간만 계산하되 보간 양쪽 실측·DST·완전 일자 계약을 보존하는 후속으로 묶는다.
+- 위 두 항목은 기존 결함이며 이번 안정화 변경으로 생긴 회귀가 아니다. 가스의 공통 domain을 확대하기 전에 해결할 Agent 후보로 유지한다. 테스트 skip/완화로 감추지 않는다.
+
 ## 다음 1순위 후보
 
 1. **가스 foundation migration** — `utilityKind` meter contract + 기존 meter electricity backfill + raw reading neutral fixed-point migration + API resource/input 정합화. canonical D1 값 보존, schema/local workerd/Worker 회귀를 같은 WorkUnit에서 완료.

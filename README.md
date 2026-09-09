@@ -11,6 +11,7 @@
 - 로그인 사용자는 접근 가능한 owner/viewer meter만 선택합니다. owner는 기록·설정 mutation이 가능하고 viewer는 조회 전용이며 최종 권한 판정은 계속 서버/API에서 강제합니다.
 - 첫 사용자는 계량기 이름, IANA timezone, 검침 마감만 입력해 첫 meter를 만들 수 있습니다. owner identity와 resource ID는 client body에서 받지 않습니다.
 - 홈의 빠른 입력은 현재 시각 + 누적 kWh를 raw reading API에 저장한 뒤 최신 raw readings를 다시 읽습니다. localStorage, offline write queue, 파생값 DB 저장은 없습니다.
+- 계량기 전환 시 이전 폼을 닫고 선택 요청의 순서를 확인해 늦은 응답을 무시합니다. 기록·설정의 제출 중 중복 요청을 막고 초안을 계량기별 메모리에 보존합니다. 저장 성공 후 재조회만 실패하면 저장 완료 사실과 조회 재시도를 안내하며, session 만료 시 계량기 화면과 초안을 지우고 로그인으로 돌아갑니다.
 - 홈 / 기록 / 분석 / 설정 하단 탐색을 유지하며 실제 raw reading을 usage/daily/billing/forecast domain에 넣어 구간 사용량·소비전력·최근 일평균·검침주기·마감 예상·30일 환산을 계산합니다.
 - owner 설정은 검침 마감 `1~31일 + 월말`을 지원합니다. 29~31일 고정값이 없는 달은 그 달 실제 월말로 자동 보정하며 `월말`은 항상 매달 마지막 날입니다.
 - 홈 예상 전기요금은 `src/domain/tariff.ts`의 주택용(저압) 2023-11-09 개정 policy(2026-09-09 공식 출처 확인)로 기본요금·전력량요금·기후환경요금·연료비조정요금(분기 고지 window)·부가가치세(원단위 4사5입)·전력산업기반기금(10원 절사, 요율 window)·월간 최저요금을 더한 예상 합계(10원 미만 절사)를 계산하고, 여름철·겨울철 1,000kWh 초과분에는 슈퍼유저요금 736.2원/kWh를 적용합니다. 복지할인과 TV수신료, 공식 고지가 없는 분기의 연료비조정요금은 미반영 항목으로 명시하고 실제 청구액처럼 표시하지 않습니다. policy가 커버하지 않는 마감 월은 요금 정책 미연결 표시를 유지합니다. 자세한 provenance와 계산 규칙은 `docs/TARIFF_POLICY.md`를 따릅니다.
@@ -75,6 +76,8 @@ npm run test:ui
 - `calculateUsageForecast`는 최근 구간, 최근 완전 일자 평균, 현재 검침주기 평균, 마감 예상, 30일 환산, 이전 주기 비교를 서로 다른 필드로 유지합니다. 최근 일평균의 window 길이는 caller가 명시해 숨은 7일 정책을 만들지 않습니다.
 - 마감 예상은 현재 주기 시작 경계부터 최신 actual reading까지의 평균 소비율을 사용합니다. 시작 경계를 만들 수 없거나 관측 시간이 0이면 예상값을 `null`로 두고 억지 추정하지 않습니다.
 - forecast 신뢰도는 임의의 등급 대신 관측 주기 비율, 사용한 완전 일자 수, 시작 경계 provenance, 최신 구간 길이, 이전 주기 availability 같은 객관 evidence를 반환합니다.
+- 최신 실측이 새 검침주기 시작과 정확히 같으면 현재 주기 사용량은 `0`입니다. 관측시간이 0이므로 평균·마감 예상·30일 환산은 계속 `null`이며, 시작 경계 자료가 없는 경우의 사용량 `null`과 구분합니다.
+- UI의 일별 합계는 관측된 기록 사이 구간만 포함합니다. `실측 구간`과 `추정·보간`을 구분하고 하루 전체 사용량과 다를 수 있음을 명시합니다.
 - 실제 reading endpoint는 `actual`, 사이 날짜 경계는 `interpolated` provenance를 갖습니다. 실제 reading이 정확히 경계에 있으면 별도 보간점을 만들지 않아 actual이 우선합니다.
 - 보간 경계의 누적 Wh는 추정값이므로 fractional Wh가 될 수 있습니다. 원본 reading의 정수 Wh 계약은 바뀌지 않으며 일자별 구간 합은 원래 구간 총사용량을 수치 오차 범위에서 보존합니다.
 - calendar 계산은 `Intl.DateTimeFormat`의 IANA timezone을 사용하며 별도 날짜 라이브러리를 추가하지 않았습니다. 순수 구간 계산 자체에는 timezone이 필요하지 않습니다.
@@ -89,9 +92,10 @@ npm run test:ui
 - `readings`: `reading_id`, meter, 절대 `measured_at_ms`, 정수 `cumulative_wh`, 생성 시각만 저장합니다. 같은 meter의 정확히 같은 measured instant는 unique index로 차단합니다.
 - owner meter, viewer grant, resource access, meter reading 시간순·이웃·exact instant 조회에 필요한 현재 index만 둡니다. `EXPLAIN QUERY PLAN` regression test가 CRUD/access path가 기존 index를 재사용하는지 확인합니다.
 - `src/persistence/d1.ts`의 모든 동적 query 값은 D1 prepared statement binding으로 전달합니다. 문자열 연결로 SQL 값을 삽입하지 않습니다. 최초 로그인 user는 `INSERT OR IGNORE` 후 Google subject를 재조회해 동일 subject의 canonical 내부 user를 얻습니다.
+- Worker의 JSON 본문은 16 KiB, GIS form은 20 KiB까지 byte 단위로 읽으며 초과 시 읽기를 중단하고 `413 / REQUEST_TOO_LARGE`를 반환합니다. Content-Length가 없거나 부정확해도 같은 제한을 적용합니다.
 - persistence row는 호출자에게 넘기기 전에 문자열, safe integer, 검침 마감 의미를 검사합니다. DB 손상·잘못된 row가 조용히 domain 입력으로 흘러가지 않도록 `PersistenceDataError`로 실패합니다.
 - meter 삭제는 그 meter의 viewer grant와 reading을 cascade 삭제합니다. user 삭제는 참조 meter/member가 남아 있으면 막혀 orphan ownership을 만들지 않습니다.
-- 누적값 역행 같은 순서 기반 검증은 SQL trigger로 중복 구현하지 않고 usage/API domain에서 강제합니다.
+- 누적값 역행은 usage/API domain에서 사전 검증하고, 실제 INSERT/UPDATE 문에서도 indexed 이웃을 다시 비교합니다. 동시 요청이 같은 사전 조회 결과를 봐도 저장 시점의 순서를 보존하며, 충돌은 기존 `409 / READING_CONFLICT`로 반환합니다. SQL trigger나 새 schema는 추가하지 않습니다.
 - `wrangler.local.jsonc`의 D1 ID와 fixture는 local-only test material입니다. 실제 remote D1 resource ID나 사용자 데이터가 아닙니다.
 - root `wrangler.jsonc`의 `DB`는 최종 운영본까지 유지할 canonical remote D1을 가리킵니다. remote schema는 versioned migration으로만 변경하고 synthetic fixture를 적용하지 않습니다.
 

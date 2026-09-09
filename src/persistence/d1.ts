@@ -479,12 +479,24 @@ export async function createReading(
   db: D1DatabaseLike,
   reading: PersistedReading,
 ): Promise<PersistedReading | null> {
+  // API preflight is advisory: another request can write before this statement runs.
+  // Recheck indexed neighbors in the write itself so the sequence stays monotonic.
   await requireRunSuccess(
     db
       .prepare(
         `INSERT OR IGNORE INTO readings (
            reading_id, meter_id, measured_at_ms, cumulative_wh, created_at_ms
-         ) VALUES (?1, ?2, ?3, ?4, ?5)`,
+         ) SELECT ?1, ?2, ?3, ?4, ?5
+         WHERE ?4 >= COALESCE((
+           SELECT cumulative_wh FROM readings
+           WHERE meter_id = ?2 AND measured_at_ms < ?3
+           ORDER BY measured_at_ms DESC LIMIT 1
+         ), ?4)
+         AND ?4 <= COALESCE((
+           SELECT cumulative_wh FROM readings
+           WHERE meter_id = ?2 AND measured_at_ms > ?3
+           ORDER BY measured_at_ms ASC LIMIT 1
+         ), ?4)`,
       )
       .bind(
         reading.readingId,
@@ -512,7 +524,17 @@ export async function updateReading(
       .prepare(
         `UPDATE OR IGNORE readings
          SET measured_at_ms = ?3, cumulative_wh = ?4
-         WHERE meter_id = ?1 AND reading_id = ?2`,
+         WHERE meter_id = ?1 AND reading_id = ?2
+         AND ?4 >= COALESCE((
+           SELECT cumulative_wh FROM readings
+           WHERE meter_id = ?1 AND measured_at_ms < ?3 AND reading_id <> ?2
+           ORDER BY measured_at_ms DESC LIMIT 1
+         ), ?4)
+         AND ?4 <= COALESCE((
+           SELECT cumulative_wh FROM readings
+           WHERE meter_id = ?1 AND measured_at_ms > ?3 AND reading_id <> ?2
+           ORDER BY measured_at_ms ASC LIMIT 1
+         ), ?4)`,
       )
       .bind(existing.meterId, existing.readingId, measuredAtMs, cumulativeWh)
       .run(),

@@ -41,6 +41,8 @@ async function installApiMock(page, options = {}) {
     lastMeterPut: null,
     loginCredential: null,
     loginCsrfToken: null,
+    writes: [],
+    beforeRequest: null,
   };
 
   await page.addInitScript(now => { Date.now = () => now; }, NOW_MS);
@@ -56,6 +58,8 @@ async function installApiMock(page, options = {}) {
     const path = url.pathname;
     const method = request.method();
     const json = (status, body) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
+    if (method === 'POST' || method === 'PUT') control.writes.push({ path, body: request.postData() });
+    if (control.beforeRequest && await control.beforeRequest({ path, method, json })) return;
 
     if (path === '/api/auth/session' && method === 'GET') {
       if (control.unconfigured) return json(503, { error: { code: 'AUTH_NOT_CONFIGURED', message: 'not configured' } });
@@ -105,7 +109,7 @@ async function installApiMock(page, options = {}) {
       return json(200, { meter });
     }
     const readingsMatch = /^\/api\/meters\/([^/]+)\/readings$/.exec(path);
-    if (readingsMatch && method === 'GET') return json(200, { readings: control.readings });
+    if (readingsMatch && method === 'GET') return json(200, { readings: control.readings.filter(reading => reading.meterId === readingsMatch[1]) });
     if (readingsMatch && method === 'POST') {
       const input = request.postDataJSON();
       control.lastReadingPost = input;
@@ -274,4 +278,204 @@ test('live UI keeps navigation, keyboard focus, timezone rendering, and narrow v
   await page.getByRole('link', { name: '분석', exact: true }).click();
   await expect(page.locator('.daily-list')).toContainText('추정·보간');
   expect(pageErrors).toEqual([]);
+});
+
+// These cases use synthetic API responses only. Gates control response order without network timing guesses.
+function responseGate() {
+  let release;
+  const promise = new Promise<void>(resolve => { release = resolve; });
+  return { promise, release: () => release() };
+}
+const secondMeter = { ...ownerMeter, meterId: 'meter-2', name: '작업실 전기' };
+const secondReadings = baseReadings.map(reading => ({ ...reading, meterId: 'meter-2', cumulativeWh: reading.cumulativeWh + 1000000 }));
+async function settleUi(page) {
+  await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+}
+
+test.describe('UI request boundaries', () => {
+  test('switch loading removes the old forms and rejects a detached form submission', async ({ page }) => {
+    const control = await installApiMock(page, { meters: [ownerMeter, secondMeter], readings: [...baseReadings, ...secondReadings] });
+    await page.goto('/');
+    await page.locator('#meter-reading').fill('7133.5');
+    await page.evaluate(() => { window.__oldForm = document.querySelector('#reading-form'); });
+    const gate = responseGate();
+    control.beforeRequest = async ({ path, method }) => {
+      if (path === '/api/meters/meter-2/readings' && method === 'GET') await gate.promise;
+      return false;
+    };
+    await page.locator('#meter-select').selectOption('meter-2');
+    await page.evaluate(() => window.__oldForm.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
+    await settleUi(page);
+    expect(control.writes).toHaveLength(0);
+    await expect(page.locator('#reading-form')).toHaveCount(0);
+    await expect(page.locator('#meter-settings-form')).toHaveCount(0);
+    gate.release();
+    await expect(page.locator('#home-title')).toHaveText('작업실 전기');
+    await expect(page.locator('#meter-reading')).toHaveValue('');
+  });
+
+  for (const staleStatus of [200, 500, 401]) {
+    test(`latest meter selection ignores stale ${staleStatus} response`, async ({ page }) => {
+      const control = await installApiMock(page, { meters: [ownerMeter, secondMeter], readings: [...baseReadings, ...secondReadings] });
+      await page.goto('/');
+      await expect(page.locator('#home-title')).toBeVisible();
+      const gate = responseGate();
+      const received = responseGate();
+      control.beforeRequest = async ({ path, method, json }) => {
+        if (path !== '/api/meters/meter-2/readings' || method !== 'GET') return false;
+        received.release();
+        await gate.promise;
+        await json(staleStatus, staleStatus === 200 ? { readings: secondReadings } : { error: { code: 'STALE_ERROR' } });
+        return true;
+      };
+      await page.locator('#meter-select').selectOption('meter-2');
+      await received.promise;
+      await page.locator('#meter-select').selectOption('meter-1');
+      await expect(page.locator('#meter-reading')).toHaveAttribute('placeholder', '7132');
+      const response = page.waitForResponse('**/api/meters/meter-2/readings');
+      gate.release();
+      await (await response).finished();
+      await settleUi(page);
+      await expect(page.locator('#home-title')).toHaveText('우리집 전기');
+      await expect(page.locator('#meter-reading')).toHaveAttribute('placeholder', '7132');
+      await page.locator('#meter-select').selectOption('meter-1');
+      await expect(page.locator('#meter-reading')).toHaveAttribute('placeholder', '7132');
+    });
+  }
+
+  test('pending reading submits once and completion preserves a newer selection', async ({ page }) => {
+    const control = await installApiMock(page, { meters: [ownerMeter, secondMeter], readings: [...baseReadings, ...secondReadings] });
+    await page.goto('/');
+    await page.locator('#meter-reading').fill('7133.5');
+    const gate = responseGate();
+    control.beforeRequest = async ({ method }) => { if (method === 'POST') await gate.promise; return false; };
+    await page.evaluate(() => {
+      const form = document.querySelector('#reading-form');
+      form.dispatchEvent(new Event('submit', { cancelable: true }));
+      form.dispatchEvent(new Event('submit', { cancelable: true }));
+    });
+    await expect.poll(() => control.writes.length).toBeGreaterThan(0);
+    await settleUi(page);
+    expect(control.writes).toHaveLength(1);
+    await expect(page.locator('#record-button')).toBeDisabled();
+    await page.locator('#meter-select').selectOption('meter-2');
+    await expect(page.locator('#home-title')).toHaveText('작업실 전기');
+    const response = page.waitForResponse(response => response.request().method() === 'POST');
+    gate.release();
+    await (await response).finished();
+    await settleUi(page);
+    await expect(page.locator('#home-title')).toHaveText('작업실 전기');
+    await expect(page.locator('#meter-reading')).toHaveAttribute('placeholder', '8132');
+    expect(control.writes[0].path).toBe('/api/meters/meter-1/readings');
+  });
+
+  test('failed reading retains the draft and allows a deliberate retry', async ({ page }) => {
+    const control = await installApiMock(page);
+    await page.goto('/');
+    control.beforeRequest = async ({ method, json }) => {
+      if (method !== 'POST') return false;
+      await json(409, { error: { code: 'READING_CONFLICT' } });
+      return true;
+    };
+    await page.locator('#meter-reading').fill('7133.5');
+    await page.locator('#record-button').click();
+    await expect(page.getByRole('status')).toContainText('누적값 순서');
+    await expect(page.locator('#meter-reading')).toHaveValue('7133.5');
+    await expect(page.locator('#record-button')).toBeEnabled();
+    control.beforeRequest = null;
+    await page.locator('#record-button').click();
+    await expect(page.getByRole('status')).toContainText('기록을 저장했습니다');
+    expect(control.writes).toHaveLength(2);
+  });
+
+  test('returning to a meter before its pending save finishes refreshes the committed reading', async ({ page }) => {
+    const control = await installApiMock(page, { meters: [ownerMeter, secondMeter], readings: [...baseReadings, ...secondReadings] });
+    await page.goto('/');
+    const gate = responseGate();
+    control.beforeRequest = async ({ method }) => { if (method === 'POST') await gate.promise; return false; };
+    await page.locator('#meter-reading').fill('7133.5');
+    await page.locator('#record-button').click();
+    await expect.poll(() => control.writes.length).toBe(1);
+    await page.locator('#meter-select').selectOption('meter-2');
+    await expect(page.locator('#home-title')).toHaveText('작업실 전기');
+    await page.locator('#meter-select').selectOption('meter-1');
+    await expect(page.locator('#meter-reading')).toHaveAttribute('placeholder', '7132');
+    await expect(page.locator('#record-button')).toBeDisabled();
+    gate.release();
+    await expect(page.locator('#meter-reading')).toHaveAttribute('placeholder', '7133.5');
+    await expect(page.getByRole('status')).toContainText('기록을 저장했습니다');
+    expect(control.writes).toHaveLength(1);
+  });
+
+  test('committed reading with failed refresh reports saved and retries only the read', async ({ page }) => {
+    const control = await installApiMock(page);
+    await page.goto('/');
+    await page.locator('#meter-reading').fill('7133.5');
+    let saved = false;
+    control.beforeRequest = async ({ method, json }) => {
+      if (method === 'POST') saved = true;
+      if (method === 'GET' && saved) { await json(500, { error: { code: 'PERSISTENCE_ERROR' } }); return true; }
+      return false;
+    };
+    await page.locator('#record-button').click();
+    await expect(page.getByRole('status')).toContainText('기록을 저장했습니다');
+    await expect(page.getByRole('status')).toContainText('최신 정보를 불러오지 못했습니다');
+    await expect(page.locator('#meter-reading')).toHaveValue('');
+    control.beforeRequest = null;
+    await page.getByRole('button', { name: '최신 정보 다시 불러오기' }).click();
+    await expect(page.locator('#meter-reading')).toHaveAttribute('placeholder', '7133.5');
+    expect(control.writes).toHaveLength(1);
+  });
+
+  test('settings pending guard and failed save preserve all draft fields', async ({ page }) => {
+    const control = await installApiMock(page);
+    await page.goto('/#settings');
+    await page.getByLabel('계량기 이름').fill('수정 중 이름');
+    await page.getByLabel('시간대').fill('UTC');
+    await page.getByLabel('검침 마감').selectOption('month-end');
+    const gate = responseGate();
+    control.beforeRequest = async ({ method, json }) => {
+      if (method !== 'PUT') return false;
+      await gate.promise;
+      await json(500, { error: { code: 'PERSISTENCE_ERROR' } });
+      return true;
+    };
+    await page.evaluate(() => {
+      const form = document.querySelector('#meter-settings-form');
+      form.dispatchEvent(new Event('submit', { cancelable: true }));
+      form.dispatchEvent(new Event('submit', { cancelable: true }));
+    });
+    await expect.poll(() => control.writes.length).toBeGreaterThan(0);
+    await settleUi(page);
+    expect(control.writes).toHaveLength(1);
+    gate.release();
+    await expect(page.getByRole('status')).toContainText('PERSISTENCE_ERROR');
+    await expect(page.getByLabel('계량기 이름')).toHaveValue('수정 중 이름');
+    await expect(page.getByLabel('시간대')).toHaveValue('UTC');
+    await expect(page.getByLabel('검침 마감')).toHaveValue('month-end');
+  });
+
+  test('mutation 401 transitions to signed out and clears the old meter screen', async ({ page }) => {
+    const control = await installApiMock(page);
+    await page.goto('/');
+    control.beforeRequest = async ({ method, json }) => {
+      if (method !== 'POST') return false;
+      control.authenticated = false;
+      await json(401, { error: { code: 'UNAUTHENTICATED' } });
+      return true;
+    };
+    await page.locator('#meter-reading').fill('7133.5');
+    await page.locator('#record-button').click();
+    await expect(page.getByRole('heading', { name: 'Google로 로그인' })).toBeVisible();
+    await expect(page.locator('#meter-select')).toHaveCount(0);
+    await expect(page.getByRole('status')).toContainText('다시 로그인');
+  });
+
+  test('daily labels describe observed intervals without claiming full day boundaries', async ({ page }) => {
+    await installApiMock(page, { readings: baseReadings.slice(-2) });
+    await page.goto('/#analysis');
+    await expect(page.locator('.daily-list')).toContainText('실측 구간');
+    await expect(page.locator('.daily')).toContainText('하루 전체 사용량과 다를 수 있습니다');
+    await expect(page.locator('.daily-list')).not.toContainText('경계 측정');
+  });
 });

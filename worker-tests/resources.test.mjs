@@ -493,3 +493,118 @@ test('dynamic resource values remain bound parameters instead of SQL interpolati
     }
   }
 });
+
+for (const [path, contentType, limit] of [
+  ['/api/meters', 'application/json', 16 * 1024],
+  ['/api/auth/google', 'application/x-www-form-urlencoded', 20 * 1024],
+]) {
+  test(`${path} stops reading an oversized stream without trusting Content-Length`, async () => {
+    for (const declaredLength of [null, '1']) {
+      let pulls = 0;
+      let cancelled = false;
+      const body = new ReadableStream({
+        pull(controller) {
+          pulls += 1;
+          controller.enqueue(new Uint8Array(4096).fill(32));
+          if (pulls === 32) controller.close();
+        },
+        cancel() { cancelled = true; },
+      }, { highWaterMark: 0 });
+      const headers = { 'content-type': contentType };
+      if (declaredLength !== null) headers['content-length'] = declaredLength;
+      const db = new MemoryDb({ users: [userRow('owner-1')] });
+      const response = await call(db, 'owner-1', path, {
+        method: 'POST', headers, body, duplex: 'half',
+      }, { verifyGoogleCredential: () => assert.fail('Oversized form must not reach Google verification') });
+      assert.equal(response.status, 413);
+      assert.equal((await response.json()).error.code, 'REQUEST_TOO_LARGE');
+      assert.equal(cancelled, true);
+      assert.ok(pulls <= limit / 4096 + 1, `Read ${pulls} chunks past the limit`);
+      assert.equal(db.meters.length, 0);
+    }
+  });
+}
+
+test('JSON byte limit accepts exact size and split UTF-8, rejects one extra byte', async () => {
+  const json = JSON.stringify({ name: '우리집', timezone: 'Asia/Seoul', billingClose: { kind: 'month-end' } });
+  const encoded = new TextEncoder().encode(json);
+  for (const extra of [0, 1]) {
+    const bytes = new Uint8Array(16 * 1024 + extra).fill(32);
+    bytes.set(encoded);
+    let offset = 0;
+    const body = new ReadableStream({
+      pull(controller) {
+        if (offset === bytes.length) return controller.close();
+        controller.enqueue(bytes.slice(offset, offset + 7));
+        offset = Math.min(offset + 7, bytes.length);
+      },
+    });
+    const db = new MemoryDb({ users: [userRow('owner-1')] });
+    const response = await call(db, 'owner-1', '/api/meters', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body, duplex: 'half',
+    });
+    assert.equal(response.status, extra ? 413 : 201);
+    if (!extra) assert.equal((await response.json()).meter.name, '우리집');
+  }
+});
+
+test('unsupported utility and unit fields cannot reinterpret an existing electric meter', async () => {
+  const db = new MemoryDb({ users: [userRow('owner-1')], meters: [meterRow()] });
+  const settings = { name: 'Home', timezone: 'Asia/Seoul', billingClose: { kind: 'month-end' } };
+  for (const [method, path] of [['POST', '/api/meters'], ['PUT', '/api/meters/meter-1']]) {
+    for (const extra of [{ utilityKind: 'gas' }, { ownerUserId: 'other' }, { unit: 'm3' }]) {
+      assert.equal((await call(db, 'owner-1', path, jsonInit(method, { ...settings, ...extra }))).status, 400);
+    }
+  }
+  for (const extra of [{ utilityKind: 'gas' }, { unit: 'm3' }, { cumulativeValue: '123' }]) {
+    const response = await call(db, 'owner-1', '/api/meters/meter-1/readings',
+      jsonInit('POST', { measuredAtMs: 2000, cumulativeKwh: '123', ...extra }));
+    assert.equal(response.status, 400);
+  }
+  assert.equal(db.meters.length, 1);
+  assert.equal(db.readings.length, 0);
+});
+
+test('every viewer mutation and outsider reading lookup preserves the server access boundary', async () => {
+  const db = new MemoryDb({
+    users: [userRow('owner-1'), userRow('viewer-1'), userRow('outsider-1')],
+    meters: [meterRow()],
+    members: [{ meter_id: 'meter-1', user_id: 'viewer-1', created_at_ms: 1 }],
+    readings: [readingRow('reading-1', 1000, 100000)],
+  });
+  for (const [method, path] of [
+    ['DELETE', '/api/meters/meter-1'],
+    ['PUT', '/api/meters/meter-1/readings/reading-1'],
+    ['DELETE', '/api/meters/meter-1/readings/reading-1'],
+  ]) {
+    assert.equal((await call(db, 'viewer-1', path, jsonInit(method, {}))).status, 403);
+  }
+  for (const path of ['/api/meters/meter-1/readings', '/api/meters/meter-1/readings/reading-1',
+                      '/api/meters/missing/readings/reading-1']) {
+    const response = await call(db, 'outsider-1', path);
+    assert.equal(response.status, 404);
+    assert.deepEqual(await response.json(), { error: { code: 'NOT_FOUND', message: 'Resource not found.' } });
+  }
+  assert.equal(db.meters.length, 1);
+  assert.equal(db.readings.length, 1);
+});
+
+test('a write rejected after API preflight returns the existing conflict contract', async () => {
+  const db = new MemoryDb({
+    users: [userRow('owner-1')], meters: [meterRow()],
+    readings: [readingRow('reading-1', 1000, 100000)],
+  });
+  // SQLite tests exercise real predicates; here model their zero-row write outcome.
+  db.run = () => {};
+  for (const [method, path] of [
+    ['POST', '/api/meters/meter-1/readings'],
+    ['PUT', '/api/meters/meter-1/readings/reading-1'],
+  ]) {
+    const response = await call(db, 'owner-1', path,
+      jsonInit(method, { measuredAtMs: 2000, cumulativeKwh: '101' }));
+    assert.equal(response.status, 409);
+    assert.equal((await response.json()).error.code, 'READING_CONFLICT');
+  }
+  assert.equal(db.readings.length, 1);
+  assert.equal(db.readings[0].cumulative_wh, 100000);
+});

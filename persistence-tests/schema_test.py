@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 import sqlite3
 import unittest
 
@@ -7,6 +8,14 @@ MIGRATION = ROOT / "migrations" / "0001_initial.sql"
 
 
 class PersistenceSchemaTests(unittest.TestCase):
+    def reading_write_sql(self, function_name):
+        # Execute the actual production statement, never a copied test equivalent.
+        source = (ROOT / "src" / "persistence" / "d1.ts").read_text(encoding="utf-8")
+        function = source.split(f"export async function {function_name}(", 1)[1]
+        sql = re.search(r"\.prepare\(\s*`([^`]+)`", function).group(1)
+        self.assertNotIn("${", sql)
+        return sql
+
     def setUp(self):
         self.db = sqlite3.connect(":memory:")
         self.db.execute("PRAGMA foreign_keys = ON")
@@ -263,6 +272,55 @@ class PersistenceSchemaTests(unittest.TestCase):
         self.assertIn("sqlite_autoindex_meter_members_1", access)
         self.assertIn("ux_readings_meter_measured_at", previous_reading)
         self.assertIn("ux_readings_meter_measured_at", exact_reading)
+
+    def test_insert_rechecks_neighbors_after_another_request_writes(self):
+        self.add_user("owner-1", "subject-owner")
+        self.add_meter()
+        sql = self.reading_write_sql("createReading")
+        # Both requests could pass an empty API snapshot; either SQL order must be safe.
+        for first, second in [(('a', 1000, 200), ('b', 2000, 100)),
+                              (('b', 2000, 100), ('a', 1000, 200))]:
+            with self.subTest(first=first):
+                self.db.execute("DELETE FROM readings")
+                for index, (reading_id, instant, value) in enumerate([first, second]):
+                    result = self.db.execute(sql, (reading_id, "meter-1", instant, value, 1))
+                    self.assertEqual(result.rowcount, 1 if index == 0 else 0)
+                self.assertEqual(self.db.execute("SELECT COUNT(*) FROM readings").fetchone()[0], 1)
+
+    def test_update_rechecks_neighbors_and_preserves_identity_on_conflict(self):
+        self.add_user("owner-1", "subject-owner")
+        self.add_meter()
+        insert = self.reading_write_sql("createReading")
+        update = self.reading_write_sql("updateReading")
+        self.db.execute(insert, ("a", "meter-1", 1000, 100, 7))
+        self.db.execute(insert, ("b", "meter-1", 3000, 300, 9))
+        # a->250 and b->200 both fit the original snapshot, but not each other.
+        self.assertEqual(self.db.execute(update, ("meter-1", "a", 1000, 250)).rowcount, 1)
+        self.assertEqual(self.db.execute(update, ("meter-1", "b", 3000, 200)).rowcount, 0)
+        # A newly inserted neighbor also invalidates an earlier update preflight.
+        self.db.execute(insert, ("c", "meter-1", 2000, 270, 8))
+        self.assertEqual(self.db.execute(update, ("meter-1", "a", 1500, 280)).rowcount, 0)
+        self.assertEqual(self.db.execute(update, ("meter-1", "b", 2500, 260)).rowcount, 0)
+        self.assertEqual(self.db.execute(
+            "SELECT reading_id, measured_at_ms, cumulative_wh, created_at_ms FROM readings ORDER BY measured_at_ms"
+        ).fetchall(), [("a", 1000, 250, 7), ("c", 2000, 270, 8), ("b", 3000, 300, 9)])
+
+    def test_atomic_writes_allow_equal_values_reordering_and_isolate_meters(self):
+        self.add_user("owner-1", "subject-owner")
+        self.add_meter()
+        self.add_meter("meter-2")
+        insert = self.reading_write_sql("createReading")
+        update = self.reading_write_sql("updateReading")
+        for args in [("a", "meter-1", 1000, 100, 7), ("b", "meter-1", 3000, 100, 9),
+                     ("other", "meter-2", 2000, 999, 8)]:
+            self.assertEqual(self.db.execute(insert, args).rowcount, 1)
+        self.assertEqual(self.db.execute(update, ("meter-1", "a", 4000, 100)).rowcount, 1)
+        self.assertEqual(self.db.execute(insert, ("dup", "meter-1", 3000, 100, 10)).rowcount, 0)
+        self.assertEqual(self.db.execute(update, ("meter-1", "a", 3000, 100)).rowcount, 0)
+        for sql, params in [(insert, ("new", "meter-1", 5000, 100, 11)),
+                            (update, ("meter-1", "a", 5000, 100))]:
+            plan = self.query_plan(sql, params)
+            self.assertIn("ux_readings_meter_measured_at", plan)
 
 
 if __name__ == "__main__":

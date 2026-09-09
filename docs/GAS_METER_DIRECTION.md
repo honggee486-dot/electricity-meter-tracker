@@ -283,6 +283,9 @@ client body에서 임의 unit을 보내지 않는다. meter가 canonical unit ow
 - 기존 `cumulative_wh` 숫자가 새 electricity milli-unit로 1:1 보존
 - reading ID/time/order/index/cascade 보존
 - migration 재적용/부분 실패 안전성
+- neutral column 전환 후에도 reading INSERT/UPDATE 한 문장의 이웃 검증을 유지한다. 동시 요청의 사전 조회만으로 누적값 증가를 보장하지 않는다.
+- 적용 전 전기 fixture의 ID/시각/정수값/순서와 적용 후 값을 대조하고, D1 migration 이력에 의한 재실행 방지와 실패 시 데이터 보존을 검사한다. 과거 migration 파일을 수정하거나 production의 실제 데이터로 테스트하지 않는다.
+- 이전 static asset/new Worker 조합과 이전 Worker로 되돌릴 수 있는 schema 범위를 명시한다. column 제거 후 구버전 Worker만 되돌리는 것을 rollback으로 간주하지 않는다.
 
 ### gas reading
 
