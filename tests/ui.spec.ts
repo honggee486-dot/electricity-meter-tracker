@@ -99,7 +99,6 @@ async function installApiMock(page, options = {}) {
         createdAtMs: NOW_MS, updatedAtMs: NOW_MS,
       };
       control.meters.push(meter);
-      control.readings = [];
       return json(201, { meter });
     }
     const meterMatch = /^\/api\/meters\/([^/]+)$/.exec(path);
@@ -237,7 +236,105 @@ test('first login with no meters can create one without client-controlled owner 
   await page.getByRole('button', { name: '계량기 만들기' }).click();
   await expect(page.getByRole('heading', { name: '작업실' })).toBeVisible();
   expect(control.meters[0].billingClose).toEqual({ kind: 'day', day: 30 });
+  expect(control.meters[0].utilityKind).toBe('electricity');
   expect(Object.hasOwn(control.meters[0], 'ownerUserId')).toBe(false);
+});
+
+const gasMeter = { ...ownerMeter, meterId: 'meter-gas', name: '우리집 가스', utilityKind: 'gas' as const };
+const gasReadingAt = (iso: string, m3: number) => ({
+  readingId: `gas-${iso}`,
+  meterId: 'meter-gas',
+  measuredAtMs: Date.parse(iso),
+  cumulativeMilliUnit: Math.round(m3 * 1000),
+  createdAtMs: Date.parse(iso),
+});
+
+test('utility switch opens a real gas tab with its own empty state, meter creation and no cross-utility mixing', async ({ page }) => {
+  const control = await installApiMock(page);
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: '우리집 전기' })).toBeVisible();
+
+  await page.getByRole('button', { name: '가스' }).click();
+  await expect(page.getByRole('heading', { name: '가스 계량기를 추가하세요' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '우리집 전기' })).toHaveCount(0);
+  await expect(page.locator('#meter-select')).toHaveCount(0);
+
+  await page.getByLabel('계량기 이름').fill('작업실 가스');
+  await page.getByRole('button', { name: '가스 계량기 만들기' }).click();
+  await expect(page.getByRole('heading', { name: '작업실 가스' })).toBeVisible();
+  expect(control.meters[1].utilityKind).toBe('gas');
+  await expect(page.locator('.reading-input span')).toHaveText('m³');
+  await expect(page.locator('#meter-select')).toContainText('작업실 가스');
+  await expect(page.locator('#meter-select')).not.toContainText('우리집 전기');
+
+  await page.getByRole('button', { name: '전기' }).click();
+  await expect(page.getByRole('heading', { name: '우리집 전기' })).toBeVisible();
+  await expect(page.locator('.reading-input span')).toHaveText('kWh');
+  await expect(page.locator('#meter-reading')).toHaveAttribute('placeholder', '7132');
+  await expect(page.locator('#meter-select')).not.toContainText('작업실 가스');
+});
+
+test('gas meter home renders m³ usage, m³/h flow and never fabricates a gas tariff', async ({ page }) => {
+  const control = await installApiMock(page, {
+    meters: [gasMeter],
+    readings: [
+      gasReadingAt('2026-09-08T08:30:00+09:00', 100),
+      gasReadingAt('2026-09-08T09:00:00+09:00', 100.5),
+    ],
+  });
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: '우리집 가스' })).toBeVisible();
+  await expect(page.locator('.hero-number')).toContainText('0.5');
+  await expect(page.locator('.hero-number')).toContainText('m³');
+  await expect(page.locator('.interval-details')).toContainText('시간당 사용량');
+  await expect(page.locator('.interval-details')).toContainText('1 m³/h');
+  const tariffCell = page.locator('.summary-list div').filter({ hasText: '예상 가스요금' }).locator('dd');
+  await expect(tariffCell).toHaveText('요금 정책 연결 전');
+  await expect(page.locator('#home .note')).toContainText('공급사·지역 공식 요금 근거가 확인되기 전까지 계산하지 않습니다');
+
+  const input = page.getByRole('textbox', { name: '현재 계량기' });
+  await expect(input).toHaveAttribute('placeholder', '100.5');
+  await input.fill('101');
+  await page.getByRole('button', { name: '기록하기' }).click();
+  await expect(page.getByRole('status')).toContainText('101 m³ 기록을 저장했습니다');
+  expect(control.lastReadingPost).toEqual({ measuredAtMs: NOW_MS, cumulativeValue: '101' });
+  await page.getByRole('link', { name: '기록', exact: true }).click();
+  await expect(page.locator('.reading-list li').first()).toContainText('101');
+  await expect(page.locator('.reading-list li').first()).toContainText('m³');
+  await page.getByRole('link', { name: '설정', exact: true }).click();
+  await expect(page.locator('#settings')).toContainText('계량기 종류 가스');
+});
+
+test('utility switch is keyboard operable with pressed state', async ({ page }) => {
+  await installApiMock(page, { meters: [ownerMeter, gasMeter], readings: [] });
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: '우리집 전기' })).toBeVisible();
+
+  const electricityButton = page.getByRole('button', { name: '전기' });
+  const gasButton = page.getByRole('button', { name: '가스' });
+  await expect(electricityButton).toHaveAttribute('aria-pressed', 'true');
+  await expect(gasButton).toHaveAttribute('aria-pressed', 'false');
+  await electricityButton.focus();
+  await page.keyboard.press('Tab');
+  await expect(gasButton).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(page.getByRole('heading', { name: '우리집 가스' })).toBeVisible();
+  await expect(gasButton).toHaveAttribute('aria-pressed', 'true');
+  await expect(electricityButton).toHaveAttribute('aria-pressed', 'false');
+  await expect(page.locator('#meter-select')).toContainText('우리집 가스');
+  await expect(page.locator('#meter-select')).not.toContainText('우리집 전기');
+});
+
+test('gas tab keeps the utility switch and input contained at narrow viewports', async ({ page }) => {
+  await installApiMock(page, { meters: [gasMeter], readings: [] });
+  await page.setViewportSize({ width: 320, height: 844 });
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: '우리집 가스' })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  const input = page.getByRole('textbox', { name: '현재 계량기' });
+  await input.fill('999999.999');
+  await expect(page.getByRole('button', { name: '기록하기' })).toBeEnabled();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
 test('API failures are visible and do not fall back to sample data', async ({ page }) => {

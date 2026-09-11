@@ -20,6 +20,11 @@
 .daily-list strong { text-align: right; overflow-wrap: anywhere; }
 #reading-form input:disabled { color: #6b746b; -webkit-text-fill-color: #6b746b; opacity: 1; }
 .field-help { margin-top: -8px; color: #6a7266; font-size: 11px; line-height: 1.6; }
+.utility-switch { display: flex; flex-wrap: wrap; gap: 8px; padding: 14px 0 2px; }
+.utility-switch button { min-height: 40px; padding: 0 18px; border: 1px solid #c7cdbf; border-radius: 999px; background: #fffef9; color: #52675f; font-size: 13px; }
+.utility-switch button[aria-pressed="true"] { background: #203c38; border-color: #203c38; color: #fffef9; }
+.state-panel .utility-switch { padding-bottom: 10px; }
+.meter-kind { margin: 0; color: #6a7266; font-size: 12px; }
 @media (max-width: 350px) {
   .meter-toolbar { grid-template-columns: 1fr; }
   .meter-toolbar label, .meter-toolbar select, .role-badge { grid-column: 1; }
