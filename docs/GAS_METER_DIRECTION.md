@@ -70,6 +70,8 @@
 
 이 결합을 그대로 둔 채 gas 값을 `Wh` 필드에 넣는 방식은 금지한다. 숫자가 계산되더라도 코드·DB 의미가 거짓이 되어 이후 tariff, migration, debugging 비용을 키운다.
 
+> **상태 갱신(2026-09-12, `work/0.1.0`)**: 위 1·2·4번 결합은 Phase A(`0002` migration + neutral API contract)와 Phase B(counter/domain core 분리), Phase C(utility별 UI 표현 계층 `src/presentation.ts`)로 해소됐다. 3번은 전기 adapter(`usage.ts`)가 counter primitive를 kWh/Wh/W로 해석하는 형태로 분리됐고 5번 tariff는 여전히 전기 전용 owner다. 이 목록은 2026-09-09 당시 결합 기록으로 보존한다.
+
 ## 3. 권장 persistence migration
 
 ### meter type

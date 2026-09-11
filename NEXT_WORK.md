@@ -156,6 +156,11 @@
 - 테스트: 기존 60개 Playwright는 무수정 통과(전기 회귀 보존)하고 신규 4개 시나리오(가스 탭 생성/전환 state 비혼합, 가스 m³·m³/h·요금 미연결 표시, switch keyboard/aria, 320px 수납)가 3 project × 72개로 통과했다. UI mock이 meter 생성 시 다른 meter의 readings를 지우던 단일 계량기 시절 동작을 제거했다.
 - 검증: provisioning 13개, schema OK, domain UTC/Asia-Seoul 각 78개, Worker 36개, Playwright 72개, build+typecheck, local D1/workerd round trip 통과.
 
+## 완료 WorkUnit: README/계약 문서 정합화 (Phase C 후속)
+
+- README의 meter 생성 body(`utilityKind` 필수, 생성 후 불변), reading mutation 계약(기본단위 decimal `cumulativeValue` → unit-neutral milli-unit, `cumulativeMilliUnit` 반환), `cumulative_wh`→`cumulative_milliunit` 전환 상태, 책임 경계 표(`counter.ts`/전기 `usage.ts` adapter/`gasUsage.ts`/`presentation.ts` 신규 rows, migrations `utility_kind` 반영)를 Phase A~C 실제 구현 기준으로 갱신하고 "gas 구현 시/확장 시" 형태의 미래형 서술을 제거했다.
+- `docs/GAS_METER_DIRECTION.md` §2에 2026-09-09 기준 결합 목록이 Phase A~C로 해소됐음을 표시하는 상태 단서를 추가했다(당시 기록은 보존). 코드·테스트 변경은 없으며 stale 서술 grep으로 잔존 없음을 확인했다.
+
 ## 확정 방향: 전기 / 가스 계량기
 
 - 같은 앱에서 ready UI 상위에 `[전기] [가스]` utility switch를 두고 기존 `홈 / 기록 / 분석 / 설정`과 utility별 meter selector를 재사용한다.
