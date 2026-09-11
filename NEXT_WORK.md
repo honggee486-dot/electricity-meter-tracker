@@ -1,6 +1,6 @@
 # NEXT_WORK.md
 
-## 현재 완료: architecture / domain / Worker+D1 / Google session / authorized CRUD / live mobile UI baseline / canonical remote D1 provisioning / PWA installability shell / auth error boundary hardening / verified tariff policy v1 / tariff policy v2 (official components) / gas data+API foundation migration (Phase A)
+## 현재 완료: architecture / domain / Worker+D1 / Google session / authorized CRUD / live mobile UI baseline / canonical remote D1 provisioning / PWA installability shell / auth error boundary hardening / verified tariff policy v1 / tariff policy v2 (official components) / gas data+API foundation migration (Phase A) / shared counter+usage domain core and gas adapter (Phase B)
 
 - [x] Vite + TypeScript + 기본 DOM/CSS, 런타임 프레임워크 없음
 - [x] Workers Static Assets 개발 preview 및 `work/*` 자동 preview 경로
@@ -139,6 +139,14 @@
 - 검증: schema 13개(0002 backfill 1:1 보존·CHECK·unique·CASCADE 포함), provisioning 13개, domain UTC/Asia-Seoul 각 61개, Worker 36개(가스 meter 생성/가스 reading milli-unit 저장/과정수 거부/PUT utilityKind 거부 포함), Playwright 60개, build+typecheck, pinned Wrangler 4.129.0 local D1/workerd round trip(가스 meter/reading 왕복 포함) 통과. Windows 포트 예약 범위로 runtime check는 `LOCAL_D1_PORT=18787 PRODUCT_WORKER_PORT=18788`로 실행했다.
 - 미적용: canonical remote D1 `0002` migration 적용과 새 Worker 버전 배포는 AGENTS.md 정책상 사용자 승인이 필요하다. migration 적용만 먼저 하면 구버전 Worker의 `cumulative_wh` SQL이 실패하므로, 원격 적용 시점에 Worker 배포를 함께 승인받아야 한다.
 
+## 완료 WorkUnit: shared counter/domain core + gas usage (Phase B)
+
+- `src/domain/counter.ts`가 unit-neutral interval primitive(`calculateCounterInterval`, `validateCounterPoint`, `CounterError` 코드 `COUNTER_DECREASED`/`NON_POSITIVE_INTERVAL`/`INVALID_COUNTER_POINT`)와 forecast window 검증까지 소유한다. daily/billing/forecast의 scalar core(두 counter 사이 delta, 경과시간, local date 분할/선형 보간, 검침주기 경계 actual/보간, 최근 완전 일평균, 주기 평균, 마감 예상, 30일 환산, 이전 주기 비교, confidence evidence)는 모두 milli-unit + duration 의미로 중립화되어 전기/가스가 동일 계산을 재사용한다.
+- 전기 adapter(`usage.ts`, `dailyUsage.ts`, `billingCycle.ts`, `forecast.ts`)는 기존 public 함수명·결과 shape·`UsageDomainError` 코드 계약을 그대로 유지하고 kWh/W 변환만 담당한다. neutral core의 `CounterError`를 전기 코드로 매핑하는 단일 `toUsageDomainError`를 사용하고, 부동소수점 연산 순서를 원 구현과 동일하게 유지해 결과가 bit-동일하다. 기존 61개 domain 테스트가 무수정 통과했다.
+- 가스 adapter `src/domain/gasUsage.ts`가 `calculateGasUsageInterval`(m³, 경과시간, m³/h)과 `calculateGasUsageForecast`(주기 누적/일평균/마감 예상/30일 환산 m³, 이전 주기 비교, unit-free confidence)를 제공한다. 에러는 neutral `CounterError` 계약을 그대로 노출하며, tariff가 없어도 사용량 계산은 완결된다(예상 가스요금 미계산 — provenance 없는 요금 금지 계약 유지).
+- worker의 reading sequence 검증(`readingFitsSequence`)이 전기 어댑터를 거치지 않고 neutral interval을 직접 사용하도록 정리됐다. UI(main.ts)와 API 계약 변경은 없다(Phase C 아님).
+- 검증: provisioning 13개, domain UTC/Asia-Seoul 각 78개(61 기존 회귀 + counter 8개 + gas 9개 신규, DST와 월말/자정 일자 경계 포함), Worker 36개, Playwright 60개, build+typecheck, local D1/workerd round trip 통과.
+
 ## 확정 방향: 전기 / 가스 계량기
 
 - 같은 앱에서 ready UI 상위에 `[전기] [가스]` utility switch를 두고 기존 `홈 / 기록 / 분석 / 설정`과 utility별 meter selector를 재사용한다.
@@ -176,13 +184,12 @@
 
 ## 다음 1순위 후보
 
-1. **공통 counter/domain core + gas usage** — 전기 결과를 바꾸지 않는 unit-neutral cumulative/interval/calendar/billing/forecast scalar 추출(counter parse primitive는 0002 WorkUnit에서 `src/domain/counter.ts`로 추출됨), gas m³/m³·h adapter와 경계 테스트 추가.
-2. **실제 `[전기] [가스]` UI** — utility별 meter 생성/선택/empty state, gas quick input, 기록/분석/설정 단위 전환, 320px/iPhone/keyboard/owner-viewer 회귀. 1 완료 전 빈 탭만 추가하지 않음.
-3. **canonical remote D1 0002 적용 + Worker 버전 배포** — 사용자 승인 필요(고위험: 실제 데이터 schema 변경과 구버전 Worker 호환성이 함께 걸림). 승인 시 migration 적용 직후 새 Worker를 같은 승인 범위에서 배포해야 한다.
-4. **gas tariff policy** — provider/지역/effective window/보정계수·평균열량·원/MJ·기본료·VAT 공식 provenance를 가진 별도 모듈. 공급사/지역 입력 UX가 실제 제품 계약을 갈라놓을 때만 Discussion Gate.
-5. 실제 owner/viewer 공유 초대/해제 UI와 관리 API(초대 수단/데이터 모델 확정이 필요한 Discussion Gate).
-6. 복지할인 optional policy(대상/한도 공식 matrix 확인과 사용자 자격 입력 UX/개인정보 계약이 필요한 별도 후속, Discussion Gate).
-7. 2026년 4분기 연료비조정단가 공시 확인 시 fuel window 추가와 confirmedOn 갱신.
-8. 요금 항목별 원단위 처리의 법령/시행세칙 원문 확인(현재는 한전ON 공식 계산식 + 저장소 규칙 병기).
+1. **실제 `[전기] [가스]` UI** — utility별 meter 생성/선택/empty state, gas quick input, 기록/분석/설정 단위 전환, 320px/iPhone/keyboard/owner-viewer 회귀. schema/API/domain 지원(Phase A·B)은 완료되어 실제 탭을 열 조건이 갖춰졌다.
+2. **canonical remote D1 0002 적용 + Worker 버전 배포** — 사용자 승인 필요(고위험: 실제 데이터 schema 변경과 구버전 Worker 호환성이 함께 걸림). 승인 시 migration 적용 직후 새 Worker를 같은 승인 범위에서 배포해야 한다.
+3. **gas tariff policy** — provider/지역/effective window/보정계수·평균열량·원/MJ·기본료·VAT 공식 provenance를 가진 별도 모듈. 공급사/지역 입력 UX가 실제 제품 계약을 갈라놓을 때만 Discussion Gate.
+4. 실제 owner/viewer 공유 초대/해제 UI와 관리 API(초대 수단/데이터 모델 확정이 필요한 Discussion Gate).
+5. 복지할인 optional policy(대상/한도 공식 matrix 확인과 사용자 자격 입력 UX/개인정보 계약이 필요한 별도 후속, Discussion Gate).
+6. 2026년 4분기 연료비조정단가 공시 확인 시 fuel window 추가와 confirmedOn 갱신.
+7. 요금 항목별 원단위 처리의 법령/시행세칙 원문 확인(현재는 한전ON 공식 계산식 + 저장소 규칙 병기).
 
 VERSION/tag/release/main 통합/정식 production 배포는 사용자 승인 없이 진행하지 않습니다.

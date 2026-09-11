@@ -14,13 +14,10 @@ import {
   resolveEffectiveBillingCloseDate,
   type BillingCloseSetting,
 } from './domain/billingCycle.js';
-import {
-  UsageDomainError,
-  calculateUsageInterval,
-  type MeterReadingPoint,
-} from './domain/usage.js';
+import { UsageDomainError } from './domain/usage.js';
 import {
   CounterError,
+  calculateCounterInterval,
   parseCumulativeCounter,
   type CounterPoint,
 } from './domain/counter.js';
@@ -438,13 +435,6 @@ async function resolveSessionUser(
   return user;
 }
 
-function counterPoint(point: CounterPoint): MeterReadingPoint {
-  // For electricity meters 1 milli-unit is 1 Wh, so the counter adapts 1:1.
-  // The checked arithmetic (monotonic counter, positive interval) is
-  // unit-neutral and shared by every utility kind.
-  return { measuredAtMs: point.measuredAtMs, cumulativeWh: point.cumulativeMilliunit };
-}
-
 function readingFitsSequence(
   previous: PersistedReading | null,
   current: ReadingInput,
@@ -452,14 +442,14 @@ function readingFitsSequence(
 ): boolean {
   try {
     if (previous) {
-      calculateUsageInterval(counterPoint(previous), counterPoint(current));
+      calculateCounterInterval(previous, current);
     }
     if (next) {
-      calculateUsageInterval(counterPoint(current), counterPoint(next));
+      calculateCounterInterval(current, next);
     }
     return true;
   } catch (error) {
-    if (error instanceof UsageDomainError) {
+    if (error instanceof CounterError) {
       return false;
     }
     throw error;

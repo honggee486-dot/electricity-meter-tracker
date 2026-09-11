@@ -9,12 +9,17 @@ import {
   type LocalDateParts,
 } from './calendar.js';
 import {
+  CounterError,
+  calculateCounterInterval,
+  type CounterPoint,
+} from './counter.js';
+import {
+  toCounterPoint,
+  toUsageDomainError,
   UsageDomainError,
-  calculateUsageInterval,
   type MeterReadingPoint,
 } from './usage.js';
 
-const WH_PER_KWH = 1_000;
 const MS_PER_HOUR = 3_600_000;
 
 export type BillingCloseSetting =
@@ -42,17 +47,16 @@ export interface BillingCycleContext {
   remainingHours: number;
 }
 
-export interface BillingBoundaryReading {
+export interface CounterBoundaryReading {
   measuredAtMs: number;
-  cumulativeWh: number;
+  cumulativeMilliunit: number;
   provenance: 'actual' | 'interpolated';
 }
 
-export interface BillingCycleUsage {
-  start: BillingBoundaryReading | null;
-  end: BillingBoundaryReading | null;
-  usageWh: number | null;
-  usageKwh: number | null;
+export interface CounterBillingCycleUsage {
+  start: CounterBoundaryReading | null;
+  end: CounterBoundaryReading | null;
+  usageMilliunit: number | null;
 }
 
 export function resolveEffectiveBillingCloseDate(
@@ -117,21 +121,23 @@ export function getBillingCycleContext(
   };
 }
 
-export function resolveBillingBoundaryReading(
-  readings: readonly MeterReadingPoint[],
+// Unit-neutral boundary resolution: the reading bracketing a cycle boundary is
+// used as-is when exact, otherwise linearly interpolated in counter milli-units.
+export function resolveCounterBoundaryReading(
+  readings: readonly CounterPoint[],
   boundaryMs: number,
-): BillingBoundaryReading | null {
+): CounterBoundaryReading | null {
   const exact = readings.find(reading => reading.measuredAtMs === boundaryMs);
   if (exact) {
     return {
       measuredAtMs: boundaryMs,
-      cumulativeWh: exact.cumulativeWh,
+      cumulativeMilliunit: exact.cumulativeMilliunit,
       provenance: 'actual',
     };
   }
 
-  let before: MeterReadingPoint | null = null;
-  let after: MeterReadingPoint | null = null;
+  let before: CounterPoint | null = null;
+  let after: CounterPoint | null = null;
   for (const reading of readings) {
     if (reading.measuredAtMs < boundaryMs && (before === null || reading.measuredAtMs > before.measuredAtMs)) {
       before = reading;
@@ -141,30 +147,80 @@ export function resolveBillingBoundaryReading(
   }
 
   if (before === null || after === null) return null;
-  const interval = calculateUsageInterval(before, after);
+  const interval = calculateCounterInterval(before, after);
   const elapsedToBoundary = boundaryMs - before.measuredAtMs;
-  const cumulativeWh = before.cumulativeWh + interval.usageWh * elapsedToBoundary / interval.elapsedMs;
+  const cumulativeMilliunit = before.cumulativeMilliunit + interval.cumulativeMilliunitDelta * elapsedToBoundary / interval.elapsedMs;
   return {
     measuredAtMs: boundaryMs,
-    cumulativeWh,
+    cumulativeMilliunit,
     provenance: 'interpolated',
   };
+}
+
+export function calculateCounterBillingCycleUsage(
+  readings: readonly CounterPoint[],
+  cycle: BillingCycle,
+): CounterBillingCycleUsage {
+  const start = resolveCounterBoundaryReading(readings, cycle.startMs);
+  const end = resolveCounterBoundaryReading(readings, cycle.endMs);
+  if (start === null || end === null) {
+    return { start, end, usageMilliunit: null };
+  }
+  if (end.cumulativeMilliunit < start.cumulativeMilliunit) {
+    throw new CounterError('COUNTER_DECREASED', 'The billing cycle end counter must not be lower than its start counter.');
+  }
+  return { start, end, usageMilliunit: end.cumulativeMilliunit - start.cumulativeMilliunit };
+}
+
+// --- electricity adapter -----------------------------------------------------
+
+export interface BillingBoundaryReading {
+  measuredAtMs: number;
+  cumulativeWh: number;
+  provenance: 'actual' | 'interpolated';
+}
+
+export interface BillingCycleUsage {
+  start: BillingBoundaryReading | null;
+  end: BillingBoundaryReading | null;
+  usageWh: number | null;
+  usageKwh: number | null;
+}
+
+export function resolveBillingBoundaryReading(
+  readings: readonly MeterReadingPoint[],
+  boundaryMs: number,
+): BillingBoundaryReading | null {
+  const counterReadings = readings.map(toCounterPoint);
+  const boundary = resolveCounterBoundaryReading(counterReadings, boundaryMs);
+  return boundary === null ? null : electricityBoundary(boundary);
 }
 
 export function calculateBillingCycleUsage(
   readings: readonly MeterReadingPoint[],
   cycle: BillingCycle,
 ): BillingCycleUsage {
-  const start = resolveBillingBoundaryReading(readings, cycle.startMs);
-  const end = resolveBillingBoundaryReading(readings, cycle.endMs);
-  if (start === null || end === null) {
-    return { start, end, usageWh: null, usageKwh: null };
+  try {
+    const usage = calculateCounterBillingCycleUsage(readings.map(toCounterPoint), cycle);
+    return {
+      start: usage.start === null ? null : electricityBoundary(usage.start),
+      end: usage.end === null ? null : electricityBoundary(usage.end),
+      usageWh: usage.usageMilliunit,
+      usageKwh: usage.usageMilliunit === null ? null : usage.usageMilliunit / WH_PER_KWH,
+    };
+  } catch (error) {
+    throw toUsageDomainError(error);
   }
-  if (end.cumulativeWh < start.cumulativeWh) {
-    throw new UsageDomainError('READING_DECREASED', 'Billing cycle end reading must not be lower than its start reading.');
-  }
-  const usageWh = end.cumulativeWh - start.cumulativeWh;
-  return { start, end, usageWh, usageKwh: usageWh / WH_PER_KWH };
+}
+
+const WH_PER_KWH = 1_000;
+
+function electricityBoundary(boundary: CounterBoundaryReading): BillingBoundaryReading {
+  return {
+    measuredAtMs: boundary.measuredAtMs,
+    cumulativeWh: boundary.cumulativeMilliunit,
+    provenance: boundary.provenance,
+  };
 }
 
 function validateCloseSetting(setting: BillingCloseSetting): void {
