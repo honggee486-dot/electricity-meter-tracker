@@ -7,6 +7,7 @@ const ownerMeter = {
   meterId: 'meter-1',
   name: '우리집 전기',
   timezone: 'Asia/Seoul',
+  utilityKind: 'electricity',
   billingClose: { kind: 'day', day: 21 },
   role: 'owner',
   createdAtMs: 1,
@@ -19,11 +20,11 @@ const baseReadings = [
   ['reading-2', '2026-09-07T20:15:00+09:00', 7118000],
   ['reading-3', '2026-09-08T12:00:00+09:00', 7127000],
   ['reading-4', '2026-09-08T18:30:00+09:00', 7132000],
-].map(([readingId, at, cumulativeWh]) => ({
+].map(([readingId, at, cumulativeMilliUnit]) => ({
   readingId,
   meterId: 'meter-1',
   measuredAtMs: Date.parse(at),
-  cumulativeWh,
+  cumulativeMilliUnit,
   createdAtMs: Date.parse(at),
 }));
 
@@ -94,7 +95,8 @@ async function installApiMock(page, options = {}) {
       const input = request.postDataJSON();
       const meter = {
         meterId: 'meter-created', name: input.name, timezone: input.timezone,
-        billingClose: input.billingClose, role: 'owner', createdAtMs: NOW_MS, updatedAtMs: NOW_MS,
+        utilityKind: input.utilityKind, billingClose: input.billingClose, role: 'owner',
+        createdAtMs: NOW_MS, updatedAtMs: NOW_MS,
       };
       control.meters.push(meter);
       control.readings = [];
@@ -117,7 +119,7 @@ async function installApiMock(page, options = {}) {
         readingId: `reading-${control.readings.length + 1}`,
         meterId: readingsMatch[1],
         measuredAtMs: input.measuredAtMs,
-        cumulativeWh: Math.round(Number(input.cumulativeKwh) * 1000),
+        cumulativeMilliUnit: Math.round(Number(input.cumulativeValue) * 1000),
         createdAtMs: NOW_MS,
       };
       control.readings.push(reading);
@@ -181,7 +183,7 @@ test('owner quick entry persists through API, reloads raw readings, and recalcul
   await expect(submit).toBeEnabled();
   await submit.click();
   await expect(page.getByRole('status')).toContainText('7133.5 kWh 기록을 저장했습니다');
-  expect(control.lastReadingPost).toEqual({ measuredAtMs: NOW_MS, cumulativeKwh: '7133.5' });
+  expect(control.lastReadingPost).toEqual({ measuredAtMs: NOW_MS, cumulativeValue: '7133.5' });
   await expect(page.locator('.hero-number')).toContainText('1.5');
   await page.getByRole('link', { name: '기록', exact: true }).click();
   await expect(page.locator('.reading-list li')).toHaveCount(baseReadings.length + 1);
@@ -287,7 +289,7 @@ function responseGate() {
   return { promise, release: () => release() };
 }
 const secondMeter = { ...ownerMeter, meterId: 'meter-2', name: '작업실 전기' };
-const secondReadings = baseReadings.map(reading => ({ ...reading, meterId: 'meter-2', cumulativeWh: reading.cumulativeWh + 1000000 }));
+const secondReadings = baseReadings.map(reading => ({ ...reading, meterId: 'meter-2', cumulativeMilliUnit: reading.cumulativeMilliUnit + 1000000 }));
 async function settleUi(page) {
   await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
 }

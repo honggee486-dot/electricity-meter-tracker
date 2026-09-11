@@ -88,7 +88,7 @@ const selectedMeter = (): MeterResource | null => state.meters.find(meter => met
 const closeSetting = (meter: MeterResource): BillingClose => meter.billingClose;
 const points = (): MeterReadingPoint[] => [...state.readings]
   .sort((a, b) => a.measuredAtMs - b.measuredAtMs)
-  .map(reading => ({ measuredAtMs: reading.measuredAtMs, cumulativeWh: reading.cumulativeWh }));
+  .map(reading => ({ measuredAtMs: reading.measuredAtMs, cumulativeWh: reading.cumulativeMilliUnit }));
 const formatCumulativeKwh = (wh: number): string => {
   const whole = Math.floor(wh / 1000);
   const fraction = wh % 1000;
@@ -319,7 +319,7 @@ function render(): void {
       <section class="interval" aria-labelledby="interval-title"><div class="section-heading"><h2 id="interval-title">직전 기록 이후</h2><span class="subtle">실제 기록 기준</span></div><p class="hero-number">${latestInterval ? `${latestInterval.usageKwh.toFixed(1)} <small>kWh</small>` : '자료 부족'}</p><dl class="interval-details"><div><dt>경과시간</dt><dd>${latestInterval ? formatHours(latestInterval.elapsedMs) : '자료 부족'}</dd></div><div><dt>평균 소비전력</dt><dd>${formatPower(latestInterval?.averagePowerW ?? null)}</dd></div></dl></section>
       <section class="cycle-summary" aria-labelledby="cycle-title"><div class="section-heading"><h2 id="cycle-title">이번 검침주기</h2><span class="deadline">마감까지 약 ${Math.max(0, Math.ceil(liveContext.remainingMs / 86_400_000))}일</span></div><dl class="summary-list"><div><dt>최신 기록까지</dt><dd>${formatKwh(currentCycle?.usageToDateWh ?? null)}</dd></div><div><dt>최근 완전 일평균 · 최대 7일</dt><dd>${forecast?.recentDailyAverage ? `${forecast.recentDailyAverage.usageKwhPerDay.toFixed(1)} kWh/일` : '자료 부족'}</dd></div><div><dt>마감 예상 사용량</dt><dd>${formatKwh(currentCycle?.projectedCloseUsageWh ?? null)}</dd></div><div><dt>예상 전기요금</dt><dd>${tariff ? escapeHtml(tariff.amount) : '요금 정책 연결 전'}</dd></div></dl><p class="note">${tariff ? escapeHtml(tariff.note) : '요금은 아직 계산하지 않습니다. 사용량과 예측은 저장된 원본 기록에서 다시 계산합니다.'}</p></section>
     </section>
-    <section id="records" class="screen" aria-labelledby="records-title" hidden><div class="page-heading"><p class="eyebrow">원본 기록</p><h1 id="records-title" tabindex="-1">기록</h1><p>${escapeHtml(meter.timezone)}</p></div>${readingRows.length ? `<ul class="reading-list">${readingRows.map(reading => `<li><span><time datetime="${new Date(reading.measuredAtMs).toISOString()}">${dateTime.format(reading.measuredAtMs)}</time><small>실제 측정</small></span><strong>${escapeHtml(formatCumulativeKwh(reading.cumulativeWh))}<small> kWh</small></strong></li>`).join('')}</ul>` : '<p class="empty-state">아직 기록이 없습니다.</p>'}</section>
+    <section id="records" class="screen" aria-labelledby="records-title" hidden><div class="page-heading"><p class="eyebrow">원본 기록</p><h1 id="records-title" tabindex="-1">기록</h1><p>${escapeHtml(meter.timezone)}</p></div>${readingRows.length ? `<ul class="reading-list">${readingRows.map(reading => `<li><span><time datetime="${new Date(reading.measuredAtMs).toISOString()}">${dateTime.format(reading.measuredAtMs)}</time><small>실제 측정</small></span><strong>${escapeHtml(formatCumulativeKwh(reading.cumulativeMilliUnit))}<small> kWh</small></strong></li>`).join('')}</ul>` : '<p class="empty-state">아직 기록이 없습니다.</p>'}</section>
     <section id="analysis" class="screen" aria-labelledby="analysis-title" hidden><div class="page-heading"><p class="eyebrow">저장된 기록으로 계산</p><h1 id="analysis-title" tabindex="-1">분석</h1></div><dl class="analysis-list"><div><dt>현재 검침주기 평균</dt><dd>${currentCycle?.averageDailyUsageKwh !== null && currentCycle?.averageDailyUsageKwh !== undefined ? `${currentCycle.averageDailyUsageKwh.toFixed(1)} kWh/일` : '자료 부족'}</dd></div><div class="forecast"><dt>검침 마감 예상</dt><dd>${formatKwh(currentCycle?.projectedCloseUsageWh ?? null)}</dd></div><div class="normalized"><dt>30일 환산</dt><dd>${formatKwh(currentCycle?.normalized30DayUsageWh ?? null)}</dd></div><div><dt>이전 주기 대비</dt><dd>${comparison ? `${comparison.projectedVsPreviousDeltaKwh >= 0 ? '+' : ''}${comparison.projectedVsPreviousDeltaKwh.toFixed(1)} kWh${comparison.projectedVsPreviousPercent === null ? '' : ` · ${comparison.projectedVsPreviousPercent.toFixed(1)}%`}` : '자료 부족'}</dd></div></dl>${confidence ? `<p class="note">관측 범위 ${(confidence.observationCoverageRatio * 100).toFixed(0)}% · 최근 완전 일자 ${confidence.recentFullDaysUsed}/${confidence.requestedRecentDays}일 · 시작 경계 ${confidence.startBoundaryProvenance ?? '자료 부족'}</p>` : '<p class="note">예측 신뢰도를 판단할 기록이 아직 부족합니다.</p>'}<section class="daily"><h2>일별 사용량</h2><p class="note">기록 사이 관측 구간의 합계로, 하루 전체 사용량과 다를 수 있습니다.</p>${daily.length ? `<ul class="daily-list">${daily.map(day => `<li><span>${day.localDate.slice(5).replace('-', '/')}</span><strong>${(day.usageWh / 1000).toFixed(1)}<small> kWh</small></strong><span class="basis">${day.interpolated ? '추정·보간' : '실측 구간'}</span></li>`).join('')}</ul>` : '<p class="empty-state">일별 사용량을 계산할 구간이 없습니다.</p>'}</section></section>
     <section id="settings" class="screen" aria-labelledby="settings-title" hidden><div class="page-heading"><p class="eyebrow">계량기 기준</p><h1 id="settings-title" tabindex="-1">설정</h1><p>${isOwner ? '소유자만 변경할 수 있습니다.' : '공유받은 계량기는 조회만 가능합니다.'}</p></div>${isOwner ? `<form id="meter-settings-form" class="stack-form"><label>계량기 이름<input name="name" required maxlength="80" value="${escapeHtml(meter.name)}"></label><label>시간대<input name="timezone" required value="${escapeHtml(meter.timezone)}"></label><label>검침 마감<select name="billingClose">${closeSelectOptions(meter.billingClose)}</select></label><p class="field-help">29~31일이 없는 달은 그 달 월말로 자동 보정됩니다. 월말은 매달 실제 마지막 날입니다.</p><button class="primary" type="submit">설정 저장</button></form>` : `<dl class="settings-list"><div><dt>계량기 이름</dt><dd>${escapeHtml(meter.name)}</dd></div><div><dt>검침 마감</dt><dd>${closeLabel(meter.billingClose)}</dd></div><div><dt>시간대</dt><dd>${escapeHtml(meter.timezone)}</dd></div></dl><p class="note">29~31일 고정 마감은 해당 날짜가 없는 달에 그 달 월말로 자동 보정됩니다. 월말 설정은 매달 실제 마지막 날입니다. viewer 권한은 계량기 설정과 원본 기록을 변경할 수 없습니다.</p>`}</section>
   `, true);
@@ -445,7 +445,9 @@ function fail(error: unknown): void {
 }
 
 async function refreshMeters(preferredMeterId?: string, request = generation): Promise<void> {
-  const meters = await api.meters();
+  // The runtime currently only presents electricity meters; the gas UI opens
+  // together with its domain support and never mixes utilities in one view.
+  const meters = (await api.meters()).filter(meter => meter.utilityKind === 'electricity');
   if (request !== generation) return;
   const preferred = preferredMeterId ?? state.selectedMeterId;
   const meterId = meters.some(meter => meter.meterId === preferred) ? preferred : meters[0]?.meterId ?? null;
@@ -507,7 +509,7 @@ async function createMeter(event: SubmitEvent): Promise<void> {
   state.notice = null;
   render();
   try {
-    const meter = await api.createMeter(input);
+    const meter = await api.createMeter({ ...input, utilityKind: 'electricity' });
     if (session !== authGeneration) return;
     createDraft = null;
     if (request !== generation) return;
@@ -573,7 +575,7 @@ async function createReading(event: SubmitEvent, meter: MeterResource, request: 
   state.refreshFailed = false;
   render();
   try {
-    const reading = await api.createReading(meter.meterId, { measuredAtMs: Date.now(), cumulativeKwh: value });
+    const reading = await api.createReading(meter.meterId, { measuredAtMs: Date.now(), cumulativeValue: value });
     if (session !== authGeneration) return;
     readingDrafts.delete(meter.meterId);
     if (state.phase !== 'ready' || state.selectedMeterId !== meter.meterId) return;

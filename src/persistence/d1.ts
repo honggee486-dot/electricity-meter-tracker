@@ -21,11 +21,14 @@ export interface PersistedUser {
   createdAtMs: number;
 }
 
+export type MeterUtilityKind = 'electricity' | 'gas';
+
 export interface PersistedMeter {
   meterId: string;
   ownerUserId: string;
   name: string;
   timezone: string;
+  utilityKind: MeterUtilityKind;
   billingCloseKind: 'day' | 'month-end';
   billingCloseDay: number | null;
   createdAtMs: number;
@@ -43,7 +46,7 @@ export interface PersistedReading {
   readingId: string;
   meterId: string;
   measuredAtMs: number;
-  cumulativeWh: number;
+  cumulativeMilliunit: number;
   createdAtMs: number;
 }
 
@@ -81,6 +84,11 @@ function mapUser(row: Row): PersistedUser {
 }
 
 function mapMeter(row: Row): PersistedMeter {
+  const utilityKind = requireString(row, 'utility_kind');
+  if (utilityKind !== 'electricity' && utilityKind !== 'gas') {
+    throw new PersistenceDataError('Expected utility_kind to be electricity or gas.');
+  }
+
   const billingCloseKind = requireString(row, 'billing_close_kind');
   if (billingCloseKind !== 'day' && billingCloseKind !== 'month-end') {
     throw new PersistenceDataError('Expected billing_close_kind to be day or month-end.');
@@ -100,6 +108,7 @@ function mapMeter(row: Row): PersistedMeter {
     ownerUserId: requireString(row, 'owner_user_id'),
     name: requireString(row, 'name'),
     timezone: requireString(row, 'timezone'),
+    utilityKind,
     billingCloseKind,
     billingCloseDay,
     createdAtMs: requireSafeInteger(row, 'created_at_ms'),
@@ -120,7 +129,7 @@ function mapReading(row: Row): PersistedReading {
     readingId: requireString(row, 'reading_id'),
     meterId: requireString(row, 'meter_id'),
     measuredAtMs: requireSafeInteger(row, 'measured_at_ms'),
-    cumulativeWh: requireSafeInteger(row, 'cumulative_wh'),
+    cumulativeMilliunit: requireSafeInteger(row, 'cumulative_milliunit'),
     createdAtMs: requireSafeInteger(row, 'created_at_ms'),
   };
 }
@@ -130,6 +139,7 @@ function meterRowsEqual(first: PersistedMeter, second: PersistedMeter): boolean 
     && first.ownerUserId === second.ownerUserId
     && first.name === second.name
     && first.timezone === second.timezone
+    && first.utilityKind === second.utilityKind
     && first.billingCloseKind === second.billingCloseKind
     && first.billingCloseDay === second.billingCloseDay
     && first.createdAtMs === second.createdAtMs
@@ -140,7 +150,7 @@ function readingRowsEqual(first: PersistedReading, second: PersistedReading): bo
   return first.readingId === second.readingId
     && first.meterId === second.meterId
     && first.measuredAtMs === second.measuredAtMs
-    && first.cumulativeWh === second.cumulativeWh
+    && first.cumulativeMilliunit === second.cumulativeMilliunit
     && first.createdAtMs === second.createdAtMs;
 }
 
@@ -220,7 +230,7 @@ export async function listOwnedMeters(
 ): Promise<PersistedMeter[]> {
   const { results } = await db
     .prepare(
-      `SELECT meter_id, owner_user_id, name, timezone,
+      `SELECT meter_id, owner_user_id, name, timezone, utility_kind,
               billing_close_kind, billing_close_day, created_at_ms, updated_at_ms
        FROM meters
        WHERE owner_user_id = ?1
@@ -255,13 +265,13 @@ export async function listAccessibleMeters(
 ): Promise<PersistedMeterAccess[]> {
   const { results } = await db
     .prepare(
-      `SELECT meter_id, owner_user_id, name, timezone,
+      `SELECT meter_id, owner_user_id, name, timezone, utility_kind,
               billing_close_kind, billing_close_day, created_at_ms, updated_at_ms,
               'owner' AS access_role
        FROM meters
        WHERE owner_user_id = ?1
        UNION ALL
-       SELECT m.meter_id, m.owner_user_id, m.name, m.timezone,
+       SELECT m.meter_id, m.owner_user_id, m.name, m.timezone, m.utility_kind,
               m.billing_close_kind, m.billing_close_day, m.created_at_ms, m.updated_at_ms,
               'viewer' AS access_role
        FROM meter_members AS mm
@@ -281,7 +291,7 @@ export async function findMeterById(
 ): Promise<PersistedMeter | null> {
   const row = await db
     .prepare(
-      `SELECT meter_id, owner_user_id, name, timezone,
+      `SELECT meter_id, owner_user_id, name, timezone, utility_kind,
               billing_close_kind, billing_close_day, created_at_ms, updated_at_ms
        FROM meters
        WHERE meter_id = ?1
@@ -300,7 +310,7 @@ export async function findMeterAccess(
 ): Promise<PersistedMeterAccess | null> {
   const row = await db
     .prepare(
-      `SELECT m.meter_id, m.owner_user_id, m.name, m.timezone,
+      `SELECT m.meter_id, m.owner_user_id, m.name, m.timezone, m.utility_kind,
               m.billing_close_kind, m.billing_close_day, m.created_at_ms, m.updated_at_ms,
               CASE WHEN m.owner_user_id = ?2 THEN 'owner' ELSE 'viewer' END AS access_role
        FROM meters AS m
@@ -325,8 +335,8 @@ export async function createMeter(
       .prepare(
         `INSERT OR IGNORE INTO meters (
            meter_id, owner_user_id, name, timezone,
-           billing_close_kind, billing_close_day, created_at_ms, updated_at_ms
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`,
+           billing_close_kind, billing_close_day, utility_kind, created_at_ms, updated_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)`
       )
       .bind(
         meter.meterId,
@@ -335,6 +345,7 @@ export async function createMeter(
         meter.timezone,
         meter.billingCloseKind,
         meter.billingCloseDay,
+        meter.utilityKind,
         meter.createdAtMs,
         meter.updatedAtMs,
       )
@@ -389,7 +400,7 @@ export async function listMeterReadings(
 ): Promise<PersistedReading[]> {
   const { results } = await db
     .prepare(
-      `SELECT reading_id, meter_id, measured_at_ms, cumulative_wh, created_at_ms
+      `SELECT reading_id, meter_id, measured_at_ms, cumulative_milliunit, created_at_ms
        FROM readings
        WHERE meter_id = ?1
        ORDER BY measured_at_ms`,
@@ -407,7 +418,7 @@ export async function findReadingById(
 ): Promise<PersistedReading | null> {
   const row = await db
     .prepare(
-      `SELECT reading_id, meter_id, measured_at_ms, cumulative_wh, created_at_ms
+      `SELECT reading_id, meter_id, measured_at_ms, cumulative_milliunit, created_at_ms
        FROM readings
        WHERE meter_id = ?1 AND reading_id = ?2
        LIMIT 1`,
@@ -424,7 +435,7 @@ export async function findReadingAt(
 ): Promise<PersistedReading | null> {
   const row = await db
     .prepare(
-      `SELECT reading_id, meter_id, measured_at_ms, cumulative_wh, created_at_ms
+      `SELECT reading_id, meter_id, measured_at_ms, cumulative_milliunit, created_at_ms
        FROM readings
        WHERE meter_id = ?1 AND measured_at_ms = ?2
        LIMIT 1`,
@@ -445,7 +456,7 @@ async function findNeighborReading(
   const ordering = direction === 'before' ? 'DESC' : 'ASC';
   const exclusion = excludedReadingId === undefined ? '' : ' AND reading_id <> ?3';
   const statement = db.prepare(
-    `SELECT reading_id, meter_id, measured_at_ms, cumulative_wh, created_at_ms
+    `SELECT reading_id, meter_id, measured_at_ms, cumulative_milliunit, created_at_ms
      FROM readings
      WHERE meter_id = ?1 AND measured_at_ms ${comparison} ?2${exclusion}
      ORDER BY measured_at_ms ${ordering}
@@ -485,15 +496,15 @@ export async function createReading(
     db
       .prepare(
         `INSERT OR IGNORE INTO readings (
-           reading_id, meter_id, measured_at_ms, cumulative_wh, created_at_ms
+           reading_id, meter_id, measured_at_ms, cumulative_milliunit, created_at_ms
          ) SELECT ?1, ?2, ?3, ?4, ?5
          WHERE ?4 >= COALESCE((
-           SELECT cumulative_wh FROM readings
+           SELECT cumulative_milliunit FROM readings
            WHERE meter_id = ?2 AND measured_at_ms < ?3
            ORDER BY measured_at_ms DESC LIMIT 1
          ), ?4)
          AND ?4 <= COALESCE((
-           SELECT cumulative_wh FROM readings
+           SELECT cumulative_milliunit FROM readings
            WHERE meter_id = ?2 AND measured_at_ms > ?3
            ORDER BY measured_at_ms ASC LIMIT 1
          ), ?4)`,
@@ -502,7 +513,7 @@ export async function createReading(
         reading.readingId,
         reading.meterId,
         reading.measuredAtMs,
-        reading.cumulativeWh,
+        reading.cumulativeMilliunit,
         reading.createdAtMs,
       )
       .run(),
@@ -517,32 +528,32 @@ export async function updateReading(
   db: D1DatabaseLike,
   existing: PersistedReading,
   measuredAtMs: number,
-  cumulativeWh: number,
+  cumulativeMilliunit: number,
 ): Promise<PersistedReading | null> {
   await requireRunSuccess(
     db
       .prepare(
         `UPDATE OR IGNORE readings
-         SET measured_at_ms = ?3, cumulative_wh = ?4
+         SET measured_at_ms = ?3, cumulative_milliunit = ?4
          WHERE meter_id = ?1 AND reading_id = ?2
          AND ?4 >= COALESCE((
-           SELECT cumulative_wh FROM readings
+           SELECT cumulative_milliunit FROM readings
            WHERE meter_id = ?1 AND measured_at_ms < ?3 AND reading_id <> ?2
            ORDER BY measured_at_ms DESC LIMIT 1
          ), ?4)
          AND ?4 <= COALESCE((
-           SELECT cumulative_wh FROM readings
+           SELECT cumulative_milliunit FROM readings
            WHERE meter_id = ?1 AND measured_at_ms > ?3 AND reading_id <> ?2
            ORDER BY measured_at_ms ASC LIMIT 1
          ), ?4)`,
       )
-      .bind(existing.meterId, existing.readingId, measuredAtMs, cumulativeWh)
+      .bind(existing.meterId, existing.readingId, measuredAtMs, cumulativeMilliunit)
       .run(),
     'Reading update',
   );
 
   const stored = await findReadingById(db, existing.meterId, existing.readingId);
-  const expected: PersistedReading = { ...existing, measuredAtMs, cumulativeWh };
+  const expected: PersistedReading = { ...existing, measuredAtMs, cumulativeMilliunit };
   return stored && readingRowsEqual(stored, expected) ? stored : null;
 }
 

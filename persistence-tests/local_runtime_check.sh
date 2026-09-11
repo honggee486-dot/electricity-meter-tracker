@@ -191,9 +191,9 @@ request_api GET "/api/meters/local-meter" "${OWNER_COOKIE}" 200
 request_api GET "/api/meters/local-meter" "${VIEWER_COOKIE}" 200
 request_api GET "/api/meters/local-meter" "${OUTSIDER_COOKIE}" 404
 request_api POST "/api/meters/local-meter/readings" "${VIEWER_COOKIE}" 403 \
-  '{"measuredAtMs":2500,"cumulativeKwh":"101.5"}'
+  '{"measuredAtMs":2500,"cumulativeValue":"101.5"}'
 request_api POST "/api/meters/local-meter/readings" "${OWNER_COOKIE}" 201 \
-  '{"measuredAtMs":2500,"cumulativeKwh":"101.5"}'
+  '{"measuredAtMs":2500,"cumulativeValue":"101.5"}'
 
 RUNTIME_READING_ID="$(python3 - "${RESOURCE_BODY}" <<'PY'
 import json
@@ -201,14 +201,14 @@ import sys
 with open(sys.argv[1], encoding="utf-8") as handle:
     body = json.load(handle)
 reading = body.get("reading", {})
-if reading.get("cumulativeWh") != 101500:
+if reading.get("cumulativeMilliUnit") != 101500:
     raise SystemExit(f"Unexpected created reading: {body!r}")
 print(reading["readingId"])
 PY
 )"
 
 request_api PUT "/api/meters/local-meter/readings/${RUNTIME_READING_ID}" "${OWNER_COOKIE}" 200 \
-  '{"measuredAtMs":2600,"cumulativeKwh":"101.6"}'
+  '{"measuredAtMs":2600,"cumulativeValue":"101.6"}'
 request_api GET "/api/meters/local-meter/readings/${RUNTIME_READING_ID}" "${VIEWER_COOKIE}" 200
 request_api PUT "/api/meters/local-meter" "${OWNER_COOKIE}" 200 \
   '{"name":"Local test meter","timezone":"Asia/Seoul","billingClose":{"kind":"month-end"}}'
@@ -218,11 +218,49 @@ import json
 import sys
 with open(sys.argv[1], encoding="utf-8") as handle:
     body = json.load(handle)
-if body.get("meter", {}).get("billingClose") != {"kind": "month-end"}:
+meter = body.get("meter", {})
+if meter.get("billingClose") != {"kind": "month-end"}:
     raise SystemExit(f"Unexpected updated meter: {body!r}")
+if meter.get("utilityKind") != "electricity":
+    raise SystemExit(f"Settings update must not change the meter utility kind: {body!r}")
 PY
 
 request_api DELETE "/api/meters/local-meter/readings/${RUNTIME_READING_ID}" "${OWNER_COOKIE}" 204
+
+# Gas meters share the same neutral fixed-point reading contract (0.001 m3).
+request_api POST "/api/meters" "${OWNER_COOKIE}" 201 \
+  '{"name":"Local gas meter","timezone":"Asia/Seoul","billingClose":{"kind":"month-end"},"utilityKind":"gas"}'
+
+GAS_METER_ID="$(python3 - "${RESOURCE_BODY}" <<'PY'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    body = json.load(handle)
+meter = body.get("meter", {})
+if meter.get("utilityKind") != "gas":
+    raise SystemExit(f"Unexpected created gas meter: {body!r}")
+print(meter["meterId"])
+PY
+)"
+
+request_api POST "/api/meters/${GAS_METER_ID}/readings" "${OWNER_COOKIE}" 201 \
+  '{"measuredAtMs":3000,"cumulativeValue":"12.345"}'
+
+python3 - "${RESOURCE_BODY}" <<'PY'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    body = json.load(handle)
+reading = body.get("reading", {})
+if reading.get("cumulativeMilliUnit") != 12345:
+    raise SystemExit(f"Unexpected created gas reading: {body!r}")
+PY
+
+request_api POST "/api/meters/${GAS_METER_ID}/readings" "${OWNER_COOKIE}" 400 \
+  '{"measuredAtMs":4000,"cumulativeValue":"12.3456"}'
+request_api PUT "/api/meters/${GAS_METER_ID}" "${OWNER_COOKIE}" 400 \
+  '{"name":"Renamed","timezone":"Asia/Seoul","billingClose":{"kind":"month-end"},"utilityKind":"electricity"}'
+request_api DELETE "/api/meters/${GAS_METER_ID}" "${OWNER_COOKIE}" 204
 
 kill "${LOCAL_PID}" 2>/dev/null || true
 wait "${LOCAL_PID}" 2>/dev/null || true

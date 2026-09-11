@@ -86,6 +86,7 @@ const meterRow = {
   owner_user_id: 'owner-1',
   name: 'Home',
   timezone: 'Asia/Seoul',
+  utility_kind: 'electricity',
   billing_close_kind: 'day',
   billing_close_day: 21,
   created_at_ms: 1,
@@ -134,11 +135,11 @@ test('owner, viewer and reading queries stay parameterized and preserve ordering
     readings: [
       {
         reading_id: 'reading-1', meter_id: 'meter-1', measured_at_ms: 1000,
-        cumulative_wh: 100000, created_at_ms: 1000,
+        cumulative_milliunit: 100000, created_at_ms: 1000,
       },
       {
         reading_id: 'reading-2', meter_id: 'meter-1', measured_at_ms: 2000,
-        cumulative_wh: 101000, created_at_ms: 2000,
+        cumulative_milliunit: 101000, created_at_ms: 2000,
       },
     ],
   });
@@ -171,11 +172,11 @@ test('local persistence route exercises all four persistence reads only when exp
     readings: [
       {
         reading_id: 'local-reading-1', meter_id: 'local-meter', measured_at_ms: 1000,
-        cumulative_wh: 100000, created_at_ms: 1000,
+        cumulative_milliunit: 100000, created_at_ms: 1000,
       },
       {
         reading_id: 'local-reading-2', meter_id: 'local-meter', measured_at_ms: 2000,
-        cumulative_wh: 101000, created_at_ms: 2000,
+        cumulative_milliunit: 101000, created_at_ms: 2000,
       },
     ],
   });

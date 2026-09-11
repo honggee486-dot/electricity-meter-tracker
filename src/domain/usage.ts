@@ -1,6 +1,11 @@
+import {
+  CounterError,
+  parseCumulativeCounter,
+  type CounterErrorCode,
+} from './counter.js';
+
 const WH_PER_KWH = 1_000;
 const MS_PER_HOUR = 3_600_000;
-const MAX_SAFE_WH = BigInt(Number.MAX_SAFE_INTEGER);
 const DATE_TIME_CLIP_LIMIT_MS = 8_640_000_000_000_000;
 
 export type UsageDomainErrorCode =
@@ -38,49 +43,45 @@ export interface UsageInterval {
   averagePowerW: number;
 }
 
+const READING_ERROR_CODES: Record<CounterErrorCode, UsageDomainErrorCode> = {
+  INVALID_COUNTER_VALUE: 'INVALID_READING_VALUE',
+  COUNTER_PRECISION_EXCEEDED: 'READING_PRECISION_EXCEEDED',
+  COUNTER_OUT_OF_RANGE: 'READING_OUT_OF_RANGE',
+  INVALID_COUNTER_POINT: 'INVALID_READING_POINT',
+};
+
+const READING_ERROR_MESSAGES: Record<CounterErrorCode, string> = {
+  INVALID_COUNTER_VALUE: 'Cumulative reading must be an unsigned decimal kWh string.',
+  COUNTER_PRECISION_EXCEEDED: 'Cumulative reading supports at most 0.001 kWh (1 Wh) precision.',
+  COUNTER_OUT_OF_RANGE: 'Cumulative reading is outside the safe integer Wh range.',
+  INVALID_COUNTER_POINT: 'measuredAtMs must be an integer Unix epoch millisecond instant within the ECMAScript Date range.',
+};
+
+function asUsageDomainError(error: unknown): unknown {
+  if (error instanceof CounterError) {
+    return new UsageDomainError(READING_ERROR_CODES[error.code], READING_ERROR_MESSAGES[error.code]);
+  }
+  return error;
+}
+
 export function parseCumulativeKwhToWh(value: string): number {
-  const match = /^(\d+)(?:\.(\d+))?$/.exec(value);
-  if (!match) {
-    throw new UsageDomainError(
-      'INVALID_READING_VALUE',
-      'Cumulative reading must be an unsigned decimal kWh string.',
-    );
+  try {
+    return parseCumulativeCounter(value, 0).cumulativeMilliunit;
+  } catch (error) {
+    throw asUsageDomainError(error);
   }
-
-  const [, wholeKwh, fraction = ''] = match;
-  if (fraction.length > 3) {
-    throw new UsageDomainError(
-      'READING_PRECISION_EXCEEDED',
-      'Cumulative reading supports at most 0.001 kWh (1 Wh) precision.',
-    );
-  }
-
-  const normalizedWholeKwh = wholeKwh.replace(/^0+(?=\d)/, '');
-  if (normalizedWholeKwh.length > 13) {
-    throw new UsageDomainError('READING_OUT_OF_RANGE', 'Cumulative reading is outside the safe integer Wh range.');
-  }
-
-  const fractionWh = fraction.padEnd(3, '0');
-  const totalWh = BigInt(normalizedWholeKwh) * BigInt(WH_PER_KWH) + BigInt(fractionWh);
-  if (totalWh > MAX_SAFE_WH) {
-    throw new UsageDomainError('READING_OUT_OF_RANGE', 'Cumulative reading is outside the safe integer Wh range.');
-  }
-
-  return Number(totalWh);
 }
 
 export function createMeterReadingPoint(cumulativeKwh: string, measuredAtMs: number): MeterReadingPoint {
-  if (!Number.isSafeInteger(measuredAtMs) || Math.abs(measuredAtMs) > DATE_TIME_CLIP_LIMIT_MS) {
-    throw new UsageDomainError(
-      'INVALID_READING_POINT',
-      'measuredAtMs must be an integer Unix epoch millisecond instant within the ECMAScript Date range.',
-    );
+  try {
+    const point = parseCumulativeCounter(cumulativeKwh, measuredAtMs);
+    return {
+      cumulativeWh: point.cumulativeMilliunit,
+      measuredAtMs: point.measuredAtMs,
+    };
+  } catch (error) {
+    throw asUsageDomainError(error);
   }
-
-  return {
-    cumulativeWh: parseCumulativeKwhToWh(cumulativeKwh),
-    measuredAtMs,
-  };
 }
 
 export function calculateUsageInterval(previous: MeterReadingPoint, current: MeterReadingPoint): UsageInterval {

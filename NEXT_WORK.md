@@ -1,6 +1,6 @@
 # NEXT_WORK.md
 
-## 현재 완료: architecture / domain / Worker+D1 / Google session / authorized CRUD / live mobile UI baseline / canonical remote D1 provisioning / PWA installability shell / auth error boundary hardening / verified tariff policy v1 / tariff policy v2 (official components)
+## 현재 완료: architecture / domain / Worker+D1 / Google session / authorized CRUD / live mobile UI baseline / canonical remote D1 provisioning / PWA installability shell / auth error boundary hardening / verified tariff policy v1 / tariff policy v2 (official components) / gas data+API foundation migration (Phase A)
 
 - [x] Vite + TypeScript + 기본 DOM/CSS, 런타임 프레임워크 없음
 - [x] Workers Static Assets 개발 preview 및 `work/*` 자동 preview 경로
@@ -32,8 +32,9 @@
 - [x] 공식 출처 provenance와 확인일을 갖는 주택용(저압) 2023-11-09 개정 전기요금 policy v1로 홈 예상 전기요금(기본요금·전력량요금 추정 소계) 표시
 - [x] tariff policy v2: 기후환경요금·연료비조정요금(분기 window)·부가가치세(원단위 4사5입)·전력산업기반기금(10원 절사, 요율 window)·슈퍼유저요금(여름/겨울 1,000kWh 초과분 736.2원/kWh)·월간 최저요금 1,000원을 공식 근거와 provenance로 편입
 - [x] 다음 제품 확장 방향을 같은 앱의 `전기 / 가스` utility switch로 확정하고, 가스 raw meter m³·데이터 migration·domain 분리·gas tariff provenance 계약을 `docs/GAS_METER_DIRECTION.md`에 고정
+- [x] gas data/API foundation migration(0002): meter `utility_kind`(electricity|gas, 생성 후 불변) 추가와 기존 meter electricity backfill, readings를 전기 전용 `cumulative_wh`에서 unit-neutral fixed-point `cumulative_milliunit`(전기 1=1 Wh 1:1 보존, 가스 1=0.001 m³)로 전환, API resource(`utilityKind`, `cumulativeMilliUnit`)/input(`utilityKind` 필수 생성값, `cumulativeValue`) neutralization, frontend 동시 전환
 
-현재 UI는 실제 repository API/domain 계약을 사용하며, canonical Cloudflare remote D1 및 Google Web Client / Cloudflare auth runtime이 연결되어 dev preview(`https://dev-electricity-meter-tracker.247dev.workers.dev`)에서 실제 로그인과 데이터 복원이 검증되었습니다. Google credential 검증 실패는 public 응답과 UI에 verifier/provider detail을 노출하지 않고 server diagnostic에만 남깁니다. PWA는 설치 가능한 app shell 계약까지만 포함하며 service worker, offline cache, offline write queue, Background Sync는 아직 추가하지 않습니다. 전기요금은 주택용(저압) 2023-11-09 개정 policy(2026-09-09 공식 출처 확인) 기준 기본요금·전력량요금·기후환경요금·연료비조정요금(분기 고지 window)·부가가치세·전력산업기반기금·월간 최저요금을 더한 예상 합계(10원 미만 절사)를 표시하고, 복지할인과 TV수신료, 그리고 공식 고지가 없는 분기의 연료비조정요금을 미반영 항목으로 UI에 명시하며, policy가 커버하지 않는 마감 월과 계산 근거가 없는 경우 기존 미연결/자료 부족 표시를 유지합니다. repository 자동화 테스트에서는 deterministic mock과 local D1/workerd를 사용합니다. 다음 제품 확장은 전기 runtime을 보존하면서 `전기 / 가스`를 상위 utility switch로 추가하는 방향이며, 현재 schema/API의 `Wh/kWh` 전용 계약을 가스 값에 그대로 재사용하지 않습니다.
+현재 UI는 실제 repository API/domain 계약을 사용하며, canonical Cloudflare remote D1 및 Google Web Client / Cloudflare auth runtime이 연결되어 dev preview(`https://dev-electricity-meter-tracker.247dev.workers.dev`)에서 실제 로그인과 데이터 복원이 검증되었습니다. Google credential 검증 실패는 public 응답과 UI에 verifier/provider detail을 노출하지 않고 server diagnostic에만 남깁니다. PWA는 설치 가능한 app shell 계약까지만 포함하며 service worker, offline cache, offline write queue, Background Sync는 아직 추가하지 않습니다. 전기요금은 주택용(저압) 2023-11-09 개정 policy(2026-09-09 공식 출처 확인) 기준 기본요금·전력량요금·기후환경요금·연료비조정요금(분기 고지 window)·부가가치세·전력산업기반기금·월간 최저요금을 더한 예상 합계(10원 미만 절사)를 표시하고, 복지할인과 TV수신료, 그리고 공식 고지가 없는 분기의 연료비조정요금을 미반영 항목으로 UI에 명시하며, policy가 커버하지 않는 마감 월과 계산 근거가 없는 경우 기존 미연결/자료 부족 표시를 유지합니다. repository 자동화 테스트에서는 deterministic mock과 local D1/workerd를 사용합니다. gas data/API foundation(0002 migration)은 local schema/persistence/workerd에서 검증되었으나 canonical remote D1 migration 적용과 새 Worker 배포는 사용자 승인 대기입니다. 이 후보 큐에서 gas UI/domain 지원은 local 검증 기준으로 진행합니다.
 
 ## 완료 WorkUnit: 모바일 UI와 auth/API/domain 연결 baseline
 
@@ -128,6 +129,16 @@
 - `domain-tests/tariff.test.mjs`가 60개 테스트로 component window 유효성, 최저요금, 999/1,000/1,001kWh 슈퍼유저 경계(하계·동계 적용/기타계절 미적용), 연료비 분기 window(2026-06은 2분기 window, 2026-10은 미커버), VAT 4사5입 경계, 기금 요율 window별 10원 절사, 예상 합계 10원 절사를 검증한다.
 - 홈 UI는 예상 합계 원 단위와 함께 policy label·확인일·포함 항목·연료비 고지 window와 단가(+5.0원/kWh)·미반영 항목을 note로 표시하며, "예상 전기요금" 문구를 유지한다. `tests/ui.spec.ts` 기대값을 148,500 원 기준으로 갱신했다.
 
+## 완료 WorkUnit: gas data/API foundation migration (Phase A, 0002)
+
+- `migrations/0002_utility_foundation.sql`이 meter에 `utility_kind TEXT NOT NULL CHECK (electricity|gas)`를 추가하고 기존 meter를 `electricity`로 backfill한다. readings는 전기 전용 `cumulative_wh`에서 unit-neutral `cumulative_milliunit`(meter 표시 기본단위의 1/1000)로 테이블 재구축하며, row identity·instant·정수값·정렬·(meter_id, measured_at_ms) unique index·CASCADE 계약을 그대로 유지한다. 전기 기존 값은 산술 변환 없이 1:1 보존된다.
+- `src/domain/counter.ts`가 unit-neutral cumulative counter primitive( decimal string → safe-integer milli-unit, instant 검증, `CounterError`)를 소유한다. `usage.ts`의 전기 파서(`parseCumulativeKwhToWh`, `createMeterReadingPoint`)는 이 primitive로 위임하며 기존 전기 error code/message와 61개 domain 테스트 결과를 회귀 없이 보존한다. interval/calendar/billing/forecast domain은 아직 electricity 전용 naming으로 남아 Phase B에서 추출한다.
+- `src/persistence/d1.ts`는 `PersistedMeter.utilityKind`와 `PersistedReading.cumulativeMilliunit`을 소유하고, settings UPDATE 문은 utility_kind를 건드리지 않는다(생성 후 in-place 변경 불가를 SQL 수준에서 유지). reading INSERT/UPDATE는 neutral column에서 동일한 한 문장 이웃 검증을 수행한다.
+- Worker API는 meter 생성 시 `utilityKind`(electricity|gas)를 필수로 받고 settings PUT에서는 거부한다. `MeterResource.utilityKind`, `ReadingResource.cumulativeMilliUnit`, reading input `{measuredAtMs, cumulativeValue}`(기본단위 decimal string, 소수 3자리까지, 서버가 fixed-point 변환 소유) 계약으로 이동했다. client에서 unit 필드 주입은 계속 400이다.
+- frontend(`src/api.ts`, `src/main.ts`)는 같은 변경으로 전환했다. meter 생성은 `utilityKind: 'electricity'`를 보내고, meter 목록은 electricity만 노출한다(가스 UI는 Phase C에서 실제 탭과 함께 열림; gas meter가 있어도 전기 화면에 섞이지 않음). 원본 표시는 `cumulativeMilliUnit`을 읽고 domain 계산은 전기 Wh adapter로 1:1 매핑한다.
+- 검증: schema 13개(0002 backfill 1:1 보존·CHECK·unique·CASCADE 포함), provisioning 13개, domain UTC/Asia-Seoul 각 61개, Worker 36개(가스 meter 생성/가스 reading milli-unit 저장/과정수 거부/PUT utilityKind 거부 포함), Playwright 60개, build+typecheck, pinned Wrangler 4.129.0 local D1/workerd round trip(가스 meter/reading 왕복 포함) 통과. Windows 포트 예약 범위로 runtime check는 `LOCAL_D1_PORT=18787 PRODUCT_WORKER_PORT=18788`로 실행했다.
+- 미적용: canonical remote D1 `0002` migration 적용과 새 Worker 버전 배포는 AGENTS.md 정책상 사용자 승인이 필요하다. migration 적용만 먼저 하면 구버전 Worker의 `cumulative_wh` SQL이 실패하므로, 원격 적용 시점에 Worker 배포를 함께 승인받아야 한다.
+
 ## 확정 방향: 전기 / 가스 계량기
 
 - 같은 앱에서 ready UI 상위에 `[전기] [가스]` utility switch를 두고 기존 `홈 / 기록 / 분석 / 설정`과 utility별 meter selector를 재사용한다.
@@ -165,9 +176,9 @@
 
 ## 다음 1순위 후보
 
-1. **가스 foundation migration** — `utilityKind` meter contract + 기존 meter electricity backfill + raw reading neutral fixed-point migration + API resource/input 정합화. canonical D1 값 보존, schema/local workerd/Worker 회귀를 같은 WorkUnit에서 완료.
-2. **공통 counter/domain core + gas usage** — 전기 결과를 바꾸지 않는 unit-neutral cumulative/interval/calendar/billing/forecast scalar 추출, gas m³/m³·h adapter와 경계 테스트 추가.
-3. **실제 `[전기] [가스]` UI** — utility별 meter 생성/선택/empty state, gas quick input, 기록/분석/설정 단위 전환, 320px/iPhone/keyboard/owner-viewer 회귀. 1·2 완료 전 빈 탭만 추가하지 않음.
+1. **공통 counter/domain core + gas usage** — 전기 결과를 바꾸지 않는 unit-neutral cumulative/interval/calendar/billing/forecast scalar 추출(counter parse primitive는 0002 WorkUnit에서 `src/domain/counter.ts`로 추출됨), gas m³/m³·h adapter와 경계 테스트 추가.
+2. **실제 `[전기] [가스]` UI** — utility별 meter 생성/선택/empty state, gas quick input, 기록/분석/설정 단위 전환, 320px/iPhone/keyboard/owner-viewer 회귀. 1 완료 전 빈 탭만 추가하지 않음.
+3. **canonical remote D1 0002 적용 + Worker 버전 배포** — 사용자 승인 필요(고위험: 실제 데이터 schema 변경과 구버전 Worker 호환성이 함께 걸림). 승인 시 migration 적용 직후 새 Worker를 같은 승인 범위에서 배포해야 한다.
 4. **gas tariff policy** — provider/지역/effective window/보정계수·평균열량·원/MJ·기본료·VAT 공식 provenance를 가진 별도 모듈. 공급사/지역 입력 UX가 실제 제품 계약을 갈라놓을 때만 Discussion Gate.
 5. 실제 owner/viewer 공유 초대/해제 UI와 관리 API(초대 수단/데이터 모델 확정이 필요한 Discussion Gate).
 6. 복지할인 optional policy(대상/한도 공식 matrix 확인과 사용자 자격 입력 UX/개인정보 계약이 필요한 별도 후속, Discussion Gate).

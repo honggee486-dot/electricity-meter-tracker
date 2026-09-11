@@ -4,7 +4,10 @@ import sqlite3
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-MIGRATION = ROOT / "migrations" / "0001_initial.sql"
+MIGRATIONS = [
+    ROOT / "migrations" / "0001_initial.sql",
+    ROOT / "migrations" / "0002_utility_foundation.sql",
+]
 
 
 class PersistenceSchemaTests(unittest.TestCase):
@@ -19,10 +22,15 @@ class PersistenceSchemaTests(unittest.TestCase):
     def setUp(self):
         self.db = sqlite3.connect(":memory:")
         self.db.execute("PRAGMA foreign_keys = ON")
-        self.db.executescript(MIGRATION.read_text(encoding="utf-8"))
+        self.apply_migrations(self.db, MIGRATIONS)
 
     def tearDown(self):
         self.db.close()
+
+    @staticmethod
+    def apply_migrations(db, migrations):
+        for migration in migrations:
+            db.executescript(migration.read_text(encoding="utf-8"))
 
     def add_user(self, user_id, subject):
         self.db.execute(
@@ -30,16 +38,16 @@ class PersistenceSchemaTests(unittest.TestCase):
             (user_id, subject, 1),
         )
 
-    def add_meter(self, meter_id="meter-1", owner_id="owner-1", kind="day", day=21):
+    def add_meter(self, meter_id="meter-1", owner_id="owner-1", kind="day", day=21, utility="electricity"):
         self.db.execute(
             """
             INSERT INTO meters (
               meter_id, owner_user_id, name, timezone,
-              billing_close_kind, billing_close_day,
+              billing_close_kind, billing_close_day, utility_kind,
               created_at_ms, updated_at_ms
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (meter_id, owner_id, "Home", "Asia/Seoul", kind, day, 1, 1),
+            (meter_id, owner_id, "Home", "Asia/Seoul", kind, day, utility, 1, 1),
         )
 
     def query_plan(self, sql, params):
@@ -77,8 +85,15 @@ class PersistenceSchemaTests(unittest.TestCase):
         }
         self.assertEqual(
             reading_columns,
-            {"reading_id", "meter_id", "measured_at_ms", "cumulative_wh", "created_at_ms"},
+            {"reading_id", "meter_id", "measured_at_ms", "cumulative_milliunit", "created_at_ms"},
         )
+
+        meter_columns = {
+            row[1]: row
+            for row in self.db.execute("PRAGMA table_info(meters)")
+        }
+        self.assertIn("utility_kind", meter_columns)
+        self.assertEqual(meter_columns["utility_kind"][3], 1)  # NOT NULL
 
     def test_google_subject_is_unique_and_internal_user_id_is_separate(self):
         self.add_user("user-1", "google-subject-1")
@@ -136,7 +151,7 @@ class PersistenceSchemaTests(unittest.TestCase):
         self.db.execute(
             """
             INSERT INTO readings
-              (reading_id, meter_id, measured_at_ms, cumulative_wh, created_at_ms)
+              (reading_id, meter_id, measured_at_ms, cumulative_milliunit, created_at_ms)
             VALUES (?, ?, ?, ?, ?)
             """,
             ("reading-1", "meter-1", 1000, 100_000, 1000),
@@ -144,7 +159,7 @@ class PersistenceSchemaTests(unittest.TestCase):
         self.db.execute(
             """
             INSERT INTO readings
-              (reading_id, meter_id, measured_at_ms, cumulative_wh, created_at_ms)
+              (reading_id, meter_id, measured_at_ms, cumulative_milliunit, created_at_ms)
             VALUES (?, ?, ?, ?, ?)
             """,
             ("reading-2", "meter-1", 2000, 100_000, 2000),
@@ -154,7 +169,7 @@ class PersistenceSchemaTests(unittest.TestCase):
             self.db.execute(
                 """
                 INSERT INTO readings
-                  (reading_id, meter_id, measured_at_ms, cumulative_wh, created_at_ms)
+                  (reading_id, meter_id, measured_at_ms, cumulative_milliunit, created_at_ms)
                 VALUES (?, ?, ?, ?, ?)
                 """,
                 ("reading-3", "meter-1", 2000, 101_000, 2000),
@@ -163,11 +178,87 @@ class PersistenceSchemaTests(unittest.TestCase):
             self.db.execute(
                 """
                 INSERT INTO readings
-                  (reading_id, meter_id, measured_at_ms, cumulative_wh, created_at_ms)
+                  (reading_id, meter_id, measured_at_ms, cumulative_milliunit, created_at_ms)
                 VALUES (?, ?, ?, ?, ?)
                 """,
                 ("reading-4", "meter-1", 3000, -1, 3000),
             )
+
+    def test_meter_utility_kind_is_an_enum_and_gas_meters_are_accepted(self):
+        self.add_user("owner-1", "subject-owner")
+        self.add_meter("electricity-meter", utility="electricity")
+        self.add_meter("gas-meter", kind="month-end", day=None, utility="gas")
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.add_meter("bad-kind-meter", utility="water")
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.add_meter("null-kind-meter", utility=None)
+
+        self.assertEqual(
+            self.db.execute(
+                "SELECT utility_kind FROM meters WHERE meter_id = 'gas-meter'"
+            ).fetchone(),
+            ("gas",),
+        )
+
+    def test_0002_backfills_electricity_and_preserves_reading_rows_1_to_1(self):
+        db = sqlite3.connect(":memory:")
+        try:
+            db.execute("PRAGMA foreign_keys = ON")
+            self.apply_migrations(db, MIGRATIONS[:1])
+            db.execute(
+                "INSERT INTO users (user_id, google_subject, created_at_ms) VALUES ('owner-1', 'subject-owner', 1)"
+            )
+            db.execute(
+                """
+                INSERT INTO meters (
+                  meter_id, owner_user_id, name, timezone,
+                  billing_close_kind, billing_close_day, created_at_ms, updated_at_ms
+                ) VALUES ('meter-1', 'owner-1', 'Home', 'Asia/Seoul', 'day', 21, 1, 1)
+                """
+            )
+            seed = [
+                ("reading-c", "meter-1", 3000, 7_127_345, 3),
+                ("reading-a", "meter-1", 1000, 7_126_000, 1),
+                ("reading-b", "meter-1", 2000, 7_127_000, 2),
+            ]
+            for reading_id, meter_id, measured_at_ms, cumulative_wh, created_at_ms in seed:
+                db.execute(
+                    """
+                    INSERT INTO readings
+                      (reading_id, meter_id, measured_at_ms, cumulative_wh, created_at_ms)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (reading_id, meter_id, measured_at_ms, cumulative_wh, created_at_ms),
+                )
+
+            self.apply_migrations(db, MIGRATIONS[1:])
+
+            self.assertEqual(
+                db.execute(
+                    "SELECT utility_kind FROM meters WHERE meter_id = 'meter-1'"
+                ).fetchone(),
+                ("electricity",),
+            )
+            migrated = db.execute(
+                """
+                SELECT reading_id, meter_id, measured_at_ms, cumulative_milliunit, created_at_ms
+                FROM readings ORDER BY measured_at_ms
+                """
+            ).fetchall()
+            self.assertEqual(
+                migrated,
+                sorted(seed, key=lambda row: row[2]),
+            )
+
+            with self.assertRaises(sqlite3.IntegrityError):
+                db.execute(
+                    "INSERT INTO readings (reading_id, meter_id, measured_at_ms, cumulative_milliunit, created_at_ms)"
+                    " VALUES ('reading-d', 'meter-1', 1000, 1, 4)"
+                )
+            db.execute("DELETE FROM meters WHERE meter_id = 'meter-1'")
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM readings").fetchone()[0], 0)
+        finally:
+            db.close()
 
     def test_meter_delete_cascades_only_meter_owned_rows(self):
         self.add_user("owner-1", "subject-owner")
@@ -180,7 +271,7 @@ class PersistenceSchemaTests(unittest.TestCase):
         self.db.execute(
             """
             INSERT INTO readings
-              (reading_id, meter_id, measured_at_ms, cumulative_wh, created_at_ms)
+              (reading_id, meter_id, measured_at_ms, cumulative_milliunit, created_at_ms)
             VALUES (?, ?, ?, ?, ?)
             """,
             ("reading-1", "meter-1", 1000, 100_000, 1000),
@@ -302,7 +393,7 @@ class PersistenceSchemaTests(unittest.TestCase):
         self.assertEqual(self.db.execute(update, ("meter-1", "a", 1500, 280)).rowcount, 0)
         self.assertEqual(self.db.execute(update, ("meter-1", "b", 2500, 260)).rowcount, 0)
         self.assertEqual(self.db.execute(
-            "SELECT reading_id, measured_at_ms, cumulative_wh, created_at_ms FROM readings ORDER BY measured_at_ms"
+            "SELECT reading_id, measured_at_ms, cumulative_milliunit, created_at_ms FROM readings ORDER BY measured_at_ms"
         ).fetchall(), [("a", 1000, 250, 7), ("c", 2000, 270, 8), ("b", 3000, 300, 9)])
 
     def test_atomic_writes_allow_equal_values_reordering_and_isolate_meters(self):

@@ -17,9 +17,13 @@ import {
 import {
   UsageDomainError,
   calculateUsageInterval,
-  createMeterReadingPoint,
   type MeterReadingPoint,
 } from './domain/usage.js';
+import {
+  CounterError,
+  parseCumulativeCounter,
+  type CounterPoint,
+} from './domain/counter.js';
 import {
   PersistenceDataError,
   createMeter,
@@ -92,7 +96,12 @@ interface MeterSettingsInput {
   billingCloseDay: number | null;
 }
 
-interface ReadingInput extends MeterReadingPoint {}
+// Utility kind is decided once at creation and can never be updated in place.
+interface MeterCreateInput extends MeterSettingsInput {
+  utilityKind: PersistedMeter['utilityKind'];
+}
+
+interface ReadingInput extends CounterPoint {}
 
 type ResourceRoute =
   | { kind: 'meters' }
@@ -316,17 +325,35 @@ function parseMeterSettings(body: Record<string, unknown>): MeterSettingsInput |
     : { name, timezone, billingCloseKind: 'day', billingCloseDay: setting.day };
 }
 
-function parseReadingInput(body: Record<string, unknown>): ReadingInput | null {
-  if (!hasExactKeys(body, ['measuredAtMs', 'cumulativeKwh'])) {
+function parseMeterCreateInput(body: Record<string, unknown>): MeterCreateInput | null {
+  if (!hasExactKeys(body, ['name', 'timezone', 'billingClose', 'utilityKind'])) {
     return null;
   }
-  if (typeof body.measuredAtMs !== 'number' || typeof body.cumulativeKwh !== 'string') {
+  const utilityKind = body.utilityKind;
+  if (utilityKind !== 'electricity' && utilityKind !== 'gas') {
+    return null;
+  }
+  const settings = parseMeterSettings({
+    name: body.name,
+    timezone: body.timezone,
+    billingClose: body.billingClose,
+  });
+  return settings === null ? null : { ...settings, utilityKind };
+}
+
+function parseReadingInput(body: Record<string, unknown>): ReadingInput | null {
+  if (!hasExactKeys(body, ['measuredAtMs', 'cumulativeValue'])) {
+    return null;
+  }
+  if (typeof body.measuredAtMs !== 'number' || typeof body.cumulativeValue !== 'string') {
     return null;
   }
   try {
-    return createMeterReadingPoint(body.cumulativeKwh, body.measuredAtMs);
+    // cumulativeValue is a decimal string in the meter's immutable base unit
+    // (electricity kWh, gas m³); both store at most 0.001 base-unit steps.
+    return parseCumulativeCounter(body.cumulativeValue, body.measuredAtMs);
   } catch (error) {
-    if (error instanceof UsageDomainError) {
+    if (error instanceof CounterError) {
       return null;
     }
     throw error;
@@ -339,6 +366,7 @@ function serializeMeter(access: PersistedMeterAccess): object {
     meterId: meter.meterId,
     name: meter.name,
     timezone: meter.timezone,
+    utilityKind: meter.utilityKind,
     billingClose: meter.billingCloseKind === 'month-end'
       ? { kind: 'month-end' }
       : { kind: 'day', day: meter.billingCloseDay },
@@ -353,7 +381,7 @@ function serializeReading(reading: PersistedReading): object {
     readingId: reading.readingId,
     meterId: reading.meterId,
     measuredAtMs: reading.measuredAtMs,
-    cumulativeWh: reading.cumulativeWh,
+    cumulativeMilliUnit: reading.cumulativeMilliunit,
     createdAtMs: reading.createdAtMs,
   };
 }
@@ -410,21 +438,24 @@ async function resolveSessionUser(
   return user;
 }
 
-function persistedPoint(reading: PersistedReading): MeterReadingPoint {
-  return { measuredAtMs: reading.measuredAtMs, cumulativeWh: reading.cumulativeWh };
+function counterPoint(point: CounterPoint): MeterReadingPoint {
+  // For electricity meters 1 milli-unit is 1 Wh, so the counter adapts 1:1.
+  // The checked arithmetic (monotonic counter, positive interval) is
+  // unit-neutral and shared by every utility kind.
+  return { measuredAtMs: point.measuredAtMs, cumulativeWh: point.cumulativeMilliunit };
 }
 
 function readingFitsSequence(
   previous: PersistedReading | null,
-  current: MeterReadingPoint,
+  current: ReadingInput,
   next: PersistedReading | null,
 ): boolean {
   try {
     if (previous) {
-      calculateUsageInterval(persistedPoint(previous), current);
+      calculateUsageInterval(counterPoint(previous), counterPoint(current));
     }
     if (next) {
-      calculateUsageInterval(current, persistedPoint(next));
+      calculateUsageInterval(counterPoint(current), counterPoint(next));
     }
     return true;
   } catch (error) {
@@ -517,7 +548,7 @@ async function handleMetersRoute(
   if (body instanceof Response) {
     return body;
   }
-  const settings = parseMeterSettings(body);
+  const settings = parseMeterCreateInput(body);
   if (!settings) {
     return invalidRequest('Meter settings are invalid.');
   }
@@ -631,7 +662,7 @@ async function handleReadingsRoute(
     readingId: randomUUID(),
     meterId: route.meterId,
     measuredAtMs: input.measuredAtMs,
-    cumulativeWh: input.cumulativeWh,
+    cumulativeMilliunit: input.cumulativeMilliunit,
     createdAtMs: nowMs,
   });
   if (!created) {
@@ -690,7 +721,7 @@ async function handleReadingRoute(
     return readingConflict();
   }
 
-  const updated = await updateReading(config.db, existing, input.measuredAtMs, input.cumulativeWh);
+  const updated = await updateReading(config.db, existing, input.measuredAtMs, input.cumulativeMilliunit);
   if (!updated) {
     return readingConflict();
   }

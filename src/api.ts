@@ -1,5 +1,6 @@
 export type BillingClose = { kind: 'day'; day: number } | { kind: 'month-end' };
 export type MeterRole = 'owner' | 'viewer';
+export type UtilityKind = 'electricity' | 'gas';
 
 export interface SessionResponse {
   authenticated: true;
@@ -14,6 +15,7 @@ export interface MeterResource {
   meterId: string;
   name: string;
   timezone: string;
+  utilityKind: UtilityKind;
   billingClose: BillingClose;
   role: MeterRole;
   createdAtMs: number;
@@ -24,7 +26,9 @@ export interface ReadingResource {
   readingId: string;
   meterId: string;
   measuredAtMs: number;
-  cumulativeWh: number;
+  // Non-negative fixed-point counter in 1/1000 steps of the meter's immutable
+  // base unit: electricity 1 = 1 Wh, gas 1 = 0.001 m³.
+  cumulativeMilliUnit: number;
   createdAtMs: number;
 }
 
@@ -34,9 +38,15 @@ export interface MeterSettingsInput {
   billingClose: BillingClose;
 }
 
+export interface MeterCreateInput extends MeterSettingsInput {
+  utilityKind: UtilityKind;
+}
+
 export interface ReadingInput {
   measuredAtMs: number;
-  cumulativeKwh: string;
+  // Decimal string in the meter's base unit (electricity kWh, gas m³) with at
+  // most three fraction digits; the server owns the fixed-point conversion.
+  cumulativeValue: string;
 }
 
 export class ApiError extends Error {
@@ -88,7 +98,7 @@ export const api = {
   }),
   logout: () => apiJson<{ authenticated: false }>('/api/auth/logout', { method: 'POST' }),
   meters: async () => (await apiJson<{ meters: MeterResource[] }>('/api/meters')).meters,
-  createMeter: async (input: MeterSettingsInput) => (
+  createMeter: async (input: MeterCreateInput) => (
     await apiJson<{ meter: MeterResource }>('/api/meters', { method: 'POST', body: jsonBody(input) })
   ).meter,
   updateMeter: async (meterId: string, input: MeterSettingsInput) => (

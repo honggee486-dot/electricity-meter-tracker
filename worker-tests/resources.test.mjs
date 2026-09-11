@@ -139,7 +139,7 @@ class MemoryDb {
     }
 
     if (sql.includes('INSERT OR IGNORE INTO meters')) {
-      const [meterId, ownerUserId, name, timezone, closeKind, closeDay, createdAtMs, updatedAtMs] = values;
+      const [meterId, ownerUserId, name, timezone, closeKind, closeDay, utilityKind, createdAtMs, updatedAtMs] = values;
       if (!this.meters.some((row) => row.meter_id === meterId)) {
         this.meters.push({
           meter_id: meterId,
@@ -148,6 +148,7 @@ class MemoryDb {
           timezone,
           billing_close_kind: closeKind,
           billing_close_day: closeDay,
+          utility_kind: utilityKind,
           created_at_ms: createdAtMs,
           updated_at_ms: updatedAtMs,
         });
@@ -179,7 +180,7 @@ class MemoryDb {
     }
 
     if (sql.includes('INSERT OR IGNORE INTO readings')) {
-      const [readingId, meterId, measuredAtMs, cumulativeWh, createdAtMs] = values;
+      const [readingId, meterId, measuredAtMs, cumulativeMilliunit, createdAtMs] = values;
       const conflict = this.readings.some(
         (row) => row.reading_id === readingId || (row.meter_id === meterId && row.measured_at_ms === measuredAtMs),
       );
@@ -188,7 +189,7 @@ class MemoryDb {
           reading_id: readingId,
           meter_id: meterId,
           measured_at_ms: measuredAtMs,
-          cumulative_wh: cumulativeWh,
+          cumulative_milliunit: cumulativeMilliunit,
           created_at_ms: createdAtMs,
         });
       }
@@ -196,7 +197,7 @@ class MemoryDb {
     }
 
     if (sql.startsWith('UPDATE OR IGNORE readings')) {
-      const [meterId, readingId, measuredAtMs, cumulativeWh] = values;
+      const [meterId, readingId, measuredAtMs, cumulativeMilliunit] = values;
       const reading = this.readings.find(
         (row) => row.meter_id === meterId && row.reading_id === readingId,
       );
@@ -205,7 +206,7 @@ class MemoryDb {
       );
       if (reading && !conflict) {
         reading.measured_at_ms = measuredAtMs;
-        reading.cumulative_wh = cumulativeWh;
+        reading.cumulative_milliunit = cumulativeMilliunit;
       }
       return;
     }
@@ -225,22 +226,23 @@ const userRow = (userId) => ({
   created_at_ms: 1,
 });
 
-const meterRow = (meterId = 'meter-1', ownerUserId = 'owner-1') => ({
+const meterRow = (meterId = 'meter-1', ownerUserId = 'owner-1', utilityKind = 'electricity') => ({
   meter_id: meterId,
   owner_user_id: ownerUserId,
   name: 'Home',
   timezone: 'Asia/Seoul',
+  utility_kind: utilityKind,
   billing_close_kind: 'day',
   billing_close_day: 21,
   created_at_ms: 1,
   updated_at_ms: 1,
 });
 
-const readingRow = (readingId, measuredAtMs, cumulativeWh) => ({
+const readingRow = (readingId, measuredAtMs, cumulativeMilliunit) => ({
   reading_id: readingId,
   meter_id: 'meter-1',
   measured_at_ms: measuredAtMs,
-  cumulative_wh: cumulativeWh,
+  cumulative_milliunit: cumulativeMilliunit,
   created_at_ms: measuredAtMs,
 });
 
@@ -293,6 +295,7 @@ test('owner creates, lists and updates meter settings without accepting client o
       name: '우리집',
       timezone: 'Asia/Seoul',
       billingClose: { kind: 'day', day: 30 },
+      utilityKind: 'electricity',
     }),
     { randomUUID: () => 'meter-created' },
   );
@@ -301,6 +304,7 @@ test('owner creates, lists and updates meter settings without accepting client o
     meterId: 'meter-created',
     name: '우리집',
     timezone: 'Asia/Seoul',
+    utilityKind: 'electricity',
     billingClose: { kind: 'day', day: 30 },
     role: 'owner',
     createdAtMs: NOW_MS + 1000,
@@ -371,7 +375,7 @@ test('viewer can read shared meter data but cannot mutate it, and revoked access
     db,
     'viewer-1',
     '/api/meters/meter-1/readings',
-    jsonInit('POST', { measuredAtMs: 2000, cumulativeKwh: '101' }),
+    jsonInit('POST', { measuredAtMs: 2000, cumulativeValue: '101' }),
   );
   assert.equal(viewerCreateReading.status, 403);
 
@@ -397,17 +401,17 @@ test('owner reading CRUD preserves measured-instant uniqueness and cumulative mo
     db,
     'owner-1',
     '/api/meters/meter-1/readings',
-    jsonInit('POST', { measuredAtMs: 2000, cumulativeKwh: '101' }),
+    jsonInit('POST', { measuredAtMs: 2000, cumulativeValue: '101' }),
     { randomUUID: () => 'reading-2' },
   );
   assert.equal(created.status, 201);
-  assert.equal((await created.json()).reading.cumulativeWh, 101000);
+  assert.equal((await created.json()).reading.cumulativeMilliUnit, 101000);
 
   const duplicate = await call(
     db,
     'owner-1',
     '/api/meters/meter-1/readings',
-    jsonInit('POST', { measuredAtMs: 2000, cumulativeKwh: '101.5' }),
+    jsonInit('POST', { measuredAtMs: 2000, cumulativeValue: '101.5' }),
   );
   assert.equal(duplicate.status, 409);
 
@@ -415,7 +419,7 @@ test('owner reading CRUD preserves measured-instant uniqueness and cumulative mo
     db,
     'owner-1',
     '/api/meters/meter-1/readings',
-    jsonInit('POST', { measuredAtMs: 2500, cumulativeKwh: '99' }),
+    jsonInit('POST', { measuredAtMs: 2500, cumulativeValue: '99' }),
   );
   assert.equal(decreased.status, 409);
 
@@ -423,7 +427,7 @@ test('owner reading CRUD preserves measured-instant uniqueness and cumulative mo
     db,
     'owner-1',
     '/api/meters/meter-1/readings/reading-2',
-    jsonInit('PUT', { measuredAtMs: 2500, cumulativeKwh: '103' }),
+    jsonInit('PUT', { measuredAtMs: 2500, cumulativeValue: '103' }),
   );
   assert.equal(invalidUpdate.status, 409);
 
@@ -431,10 +435,10 @@ test('owner reading CRUD preserves measured-instant uniqueness and cumulative mo
     db,
     'owner-1',
     '/api/meters/meter-1/readings/reading-2',
-    jsonInit('PUT', { measuredAtMs: 2200, cumulativeKwh: '101.2' }),
+    jsonInit('PUT', { measuredAtMs: 2200, cumulativeValue: '101.2' }),
   );
   assert.equal(updated.status, 200);
-  assert.equal((await updated.json()).reading.cumulativeWh, 101200);
+  assert.equal((await updated.json()).reading.cumulativeMilliUnit, 101200);
 
   const single = await call(db, 'owner-1', '/api/meters/meter-1/readings/reading-2');
   assert.equal(single.status, 200);
@@ -468,7 +472,7 @@ test('meter and reading bodies validate timezone, billing close, precision and c
     db,
     'owner-1',
     '/api/meters/meter-1/readings',
-    jsonInit('POST', { measuredAtMs: 2000, cumulativeKwh: '100.0001' }),
+    jsonInit('POST', { measuredAtMs: 2000, cumulativeValue: '100.0001' }),
   );
   assert.equal(badPrecision.status, 400);
 
@@ -526,7 +530,7 @@ for (const [path, contentType, limit] of [
 }
 
 test('JSON byte limit accepts exact size and split UTF-8, rejects one extra byte', async () => {
-  const json = JSON.stringify({ name: '우리집', timezone: 'Asia/Seoul', billingClose: { kind: 'month-end' } });
+  const json = JSON.stringify({ name: '우리집', timezone: 'Asia/Seoul', billingClose: { kind: 'month-end' }, utilityKind: 'electricity' });
   const encoded = new TextEncoder().encode(json);
   for (const extra of [0, 1]) {
     const bytes = new Uint8Array(16 * 1024 + extra).fill(32);
@@ -548,20 +552,47 @@ test('JSON byte limit accepts exact size and split UTF-8, rejects one extra byte
   }
 });
 
-test('unsupported utility and unit fields cannot reinterpret an existing electric meter', async () => {
+test('meter creation decides the immutable utility kind and settings cannot reinterpret it', async () => {
   const db = new MemoryDb({ users: [userRow('owner-1')], meters: [meterRow()] });
   const settings = { name: 'Home', timezone: 'Asia/Seoul', billingClose: { kind: 'month-end' } };
-  for (const [method, path] of [['POST', '/api/meters'], ['PUT', '/api/meters/meter-1']]) {
-    for (const extra of [{ utilityKind: 'gas' }, { ownerUserId: 'other' }, { unit: 'm3' }]) {
-      assert.equal((await call(db, 'owner-1', path, jsonInit(method, { ...settings, ...extra }))).status, 400);
-    }
+
+  const gasCreated = await call(db, 'owner-1', '/api/meters',
+    jsonInit('POST', { ...settings, utilityKind: 'gas' }), { randomUUID: () => 'meter-gas' });
+  assert.equal(gasCreated.status, 201);
+  assert.equal((await gasCreated.json()).meter.utilityKind, 'gas');
+
+  const gasReading = await call(db, 'owner-1', '/api/meters/meter-gas/readings',
+    jsonInit('POST', { measuredAtMs: 5000, cumulativeValue: '12.345' }), { randomUUID: () => 'reading-gas' });
+  assert.equal(gasReading.status, 201);
+  assert.equal((await gasReading.json()).reading.cumulativeMilliUnit, 12345);
+  const overPrecise = await call(db, 'owner-1', '/api/meters/meter-gas/readings',
+    jsonInit('POST', { measuredAtMs: 6000, cumulativeValue: '12.3456' }));
+  assert.equal(overPrecise.status, 400);
+
+  for (const invalidKind of [undefined, 'water', 'ELECTRICITY', 123, null]) {
+    const body = invalidKind === undefined ? settings : { ...settings, utilityKind: invalidKind };
+    assert.equal((await call(db, 'owner-1', '/api/meters', jsonInit('POST', body))).status, 400);
   }
-  for (const extra of [{ utilityKind: 'gas' }, { unit: 'm3' }, { cumulativeValue: '123' }]) {
+  for (const extra of [{ ownerUserId: 'other' }, { unit: 'm3' }]) {
+    assert.equal((await call(db, 'owner-1', '/api/meters',
+      jsonInit('POST', { ...settings, utilityKind: 'electricity', ...extra }))).status, 400);
+  }
+  for (const extra of [{ utilityKind: 'gas' }, { utilityKind: 'electricity' }, { ownerUserId: 'other' }, { unit: 'm3' }]) {
+    assert.equal((await call(db, 'owner-1', '/api/meters/meter-1',
+      jsonInit('PUT', { ...settings, ...extra }))).status, 400);
+  }
+  assert.equal(db.meters.find((row) => row.meter_id === 'meter-1').utility_kind, 'electricity');
+  assert.equal(db.meters.length, 2);
+  assert.equal(db.readings.length, 1);
+});
+
+test('reading bodies reject utility reinterpretation and unknown fields', async () => {
+  const db = new MemoryDb({ users: [userRow('owner-1')], meters: [meterRow()] });
+  for (const extra of [{ utilityKind: 'gas' }, { unit: 'm3' }, { cumulativeKwh: '123' }]) {
     const response = await call(db, 'owner-1', '/api/meters/meter-1/readings',
-      jsonInit('POST', { measuredAtMs: 2000, cumulativeKwh: '123', ...extra }));
+      jsonInit('POST', { measuredAtMs: 2000, cumulativeValue: '123', ...extra }));
     assert.equal(response.status, 400);
   }
-  assert.equal(db.meters.length, 1);
   assert.equal(db.readings.length, 0);
 });
 
@@ -601,10 +632,10 @@ test('a write rejected after API preflight returns the existing conflict contrac
     ['PUT', '/api/meters/meter-1/readings/reading-1'],
   ]) {
     const response = await call(db, 'owner-1', path,
-      jsonInit(method, { measuredAtMs: 2000, cumulativeKwh: '101' }));
+      jsonInit(method, { measuredAtMs: 2000, cumulativeValue: '101' }));
     assert.equal(response.status, 409);
     assert.equal((await response.json()).error.code, 'READING_CONFLICT');
   }
   assert.equal(db.readings.length, 1);
-  assert.equal(db.readings[0].cumulative_wh, 100000);
+  assert.equal(db.readings[0].cumulative_milliunit, 100000);
 });
